@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="/cad-field-book/iphone/">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="A new Flutter project.">
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+  >
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      overscroll-behavior: none;
+      touch-action: none;
+    }
+    flt-glass-pane, flutter-view {
+      touch-action: none;
+    }
+  </style>
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="drawing_app">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>drawing_app</title>
+  <link rel="manifest" href="manifest.json">
+</head>
+<body>
+  <script>
+    // Keep the selected app mode when iOS launches the saved home-screen icon.
+    // Some iOS versions reopen the manifest start URL without its original query.
+    (function () {
+      const url = new URL(window.location.href);
+      const requestedMode = url.searchParams.get('mode');
+      if (requestedMode === 'photo' || requestedMode === 'draw') {
+        localStorage.setItem('cadFieldbookLaunchMode', requestedMode);
+        return;
+      }
+      const standalone = window.matchMedia('(display-mode: standalone)').matches ||
+        window.navigator.standalone === true;
+      if (!standalone) return;
+      const savedMode = localStorage.getItem('cadFieldbookLaunchMode');
+      const iPhone = /iPhone|iPod/i.test(window.navigator.userAgent);
+      if (savedMode === 'photo' || iPhone) {
+        url.searchParams.set('mode', 'photo');
+        window.history.replaceState(null, '', url.toString());
+      }
+    })();
+  </script>
+  <script>
+    window.cadFieldbookSaveBinaryWithPicker = async function (name, bytes, mimeType) {
+      const blob = new Blob([bytes], { type: mimeType });
+      const dot = name.lastIndexOf('.');
+      const extension = dot >= 0 ? name.substring(dot).toLowerCase() : '';
+      if (typeof window.showSaveFilePicker === 'function') {
+        try {
+          const handle = await window.showSaveFilePicker({
+            suggestedName: name,
+            types: [{
+              description: extension === '.xlsx' ? 'Excel 写真台帳' : 'ファイル',
+              accept: { [mimeType]: extension ? [extension] : [] }
+            }]
+          });
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          return true;
+        } catch (error) {
+          if (error && error.name === 'AbortError') return false;
+          throw error;
+        }
+      }
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = name;
+      anchor.style.display = 'none';
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      return true;
+    };
+
+    window.cadFieldbookSaveTextWithPicker = async function (name, content, mimeType) {
+      const blob = new Blob([content], { type: mimeType + ';charset=utf-8' });
+      if (typeof window.showSaveFilePicker === 'function') {
+        try {
+          const handle = await window.showSaveFilePicker({
+            suggestedName: name,
+            types: [{
+              description: 'DXF図面',
+              accept: { 'application/dxf': ['.dxf'] }
+            }]
+          });
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          return true;
+        } catch (error) {
+          if (error && error.name === 'AbortError') return false;
+          throw error;
+        }
+      }
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = name;
+      anchor.style.display = 'none';
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      return true;
+    };
+  </script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then((registrations) => {
+        registrations.forEach((registration) => registration.unregister());
+      });
+    }
+  </script>
+  <!--
+    You can customize the "flutter_bootstrap.js" script.
+    This is useful to provide a custom configuration to the Flutter loader
+    or to give the user feedback during the initialization process.
+
+    For more details:
+    * https://docs.flutter.dev/platform-integration/web/initialization
+  -->
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
