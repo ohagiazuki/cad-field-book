@@ -1,12 +1,12 @@
 {
     "name": "drawing_app",
     "short_name": "drawing_app",
-    "start_url": ".",
+    "start_url": "./?mode=photo",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
     "description": "A new Flutter project.",
-    "orientation": "portrait-primary",
+    "orientation": "any",
     "prefer_related_applications": false,
     "icons": [
         {
