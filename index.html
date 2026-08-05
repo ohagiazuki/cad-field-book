@@ -51,6 +51,40 @@
 </head>
 <body>
   <script>
+    window.cadFieldbookSaveBinaryWithPicker = async function (name, bytes, mimeType) {
+      const blob = new Blob([bytes], { type: mimeType });
+      const dot = name.lastIndexOf('.');
+      const extension = dot >= 0 ? name.substring(dot).toLowerCase() : '';
+      if (typeof window.showSaveFilePicker === 'function') {
+        try {
+          const handle = await window.showSaveFilePicker({
+            suggestedName: name,
+            types: [{
+              description: extension === '.xlsx' ? 'Excel 写真台帳' : 'ファイル',
+              accept: { [mimeType]: extension ? [extension] : [] }
+            }]
+          });
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          return true;
+        } catch (error) {
+          if (error && error.name === 'AbortError') return false;
+          throw error;
+        }
+      }
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = name;
+      anchor.style.display = 'none';
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      return true;
+    };
+
     window.cadFieldbookSaveTextWithPicker = async function (name, content, mimeType) {
       const blob = new Blob([content], { type: mimeType + ';charset=utf-8' });
       if (typeof window.showSaveFilePicker === 'function') {
