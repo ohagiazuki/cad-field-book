@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html>
 <head>
   <!--
@@ -14,7 +14,7 @@
     This is a placeholder for base href that will be replaced by the value of
     the `--base-href` argument provided to `flutter build`.
   -->
-  <base href="./">
+  <base href="/cad-field-book/iphone/">
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
@@ -81,7 +81,7 @@
           const handle = await window.showSaveFilePicker({
             suggestedName: name,
             types: [{
-              description: extension === '.xlsx' ? 'Excel 蜀咏悄蜿ｰ蟶ｳ' : '繝輔ぃ繧､繝ｫ',
+              description: extension === '.xlsx' ? 'Excel 写真台帳' : 'ファイル',
               accept: { [mimeType]: extension ? [extension] : [] }
             }]
           });
@@ -91,7 +91,9 @@
           return true;
         } catch (error) {
           if (error && error.name === 'AbortError') return false;
-          throw error;
+          // ZIP generation can outlive the short-lived browser user gesture.
+          // Fall back to a normal download instead of losing the file.
+          console.warn('Save picker unavailable; using download fallback.', error);
         }
       }
       const url = URL.createObjectURL(blob);
@@ -113,7 +115,7 @@
           const handle = await window.showSaveFilePicker({
             suggestedName: name,
             types: [{
-              description: 'DXF蝗ｳ髱｢',
+              description: 'DXF図面',
               accept: { 'application/dxf': ['.dxf'] }
             }]
           });
@@ -153,7 +155,6 @@
     For more details:
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
-  <script src="flutter_bootstrap.js" async></script>
+  <script src="flutter_bootstrap.js?v=photo-tiered1" async></script>
 </body>
 </html>
-
