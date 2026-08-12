@@ -14,7 +14,7 @@
     This is a placeholder for base href that will be replaced by the value of
     the `--base-href` argument provided to `flutter build`.
   -->
-  <base href="/cad-field-book/">
+  <base href="/cad-field-book/photo/">
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
@@ -91,9 +91,7 @@
           return true;
         } catch (error) {
           if (error && error.name === 'AbortError') return false;
-          // ZIP generation can outlive the short-lived browser user gesture.
-          // Fall back to a normal download instead of losing the file.
-          console.warn('Save picker unavailable; using download fallback.', error);
+          throw error;
         }
       }
       const url = URL.createObjectURL(blob);
@@ -155,6 +153,6 @@
     For more details:
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
-  <script src="flutter_bootstrap.js?v=performance-diagnostic1" async></script>
+  <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>
