@@ -91,7 +91,9 @@
           return true;
         } catch (error) {
           if (error && error.name === 'AbortError') return false;
-          throw error;
+          // ZIP generation can outlive the short-lived browser user gesture.
+          // Fall back to a normal download instead of losing the file.
+          console.warn('Save picker unavailable; using download fallback.', error);
         }
       }
       const url = URL.createObjectURL(blob);

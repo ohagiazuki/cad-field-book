@@ -1,7 +1,7 @@
 {
-    "name": "drawing_app",
-    "short_name": "drawing_app",
-    "start_url": "./?mode=photo",
+    "name": "CAD野帳",
+    "short_name": "CAD野帳",
+    "start_url": "./?mode=draw",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
