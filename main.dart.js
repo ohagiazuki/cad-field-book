@@ -64112,28 +64112,29 @@ if(j.length!==0){l=n.gaU(0)
 if(!new A.x(l.a-f,l.b-f,l.c+f,l.d+f).n(0,a))continue
 for(l=j.length,i=0;i<j.length;j.length===l||(0,A.p)(j),++i){h=j[i]
 if(g.vM(a,h.a,h.b)<f)return!1}continue}if(n.gaU(0).eF(e)||n.gaU(0).n(0,a))return!1}return!0},
-Z8(a3,a4,a5,a6){var s,r,q,p,o,n,m,l,k,j,i,h,g,f,e=a5==="triangle"?a4*1.18:a4,d=a3.gaU(0),c=d.gaO(),b=d.c,a=d.b,a0=d.a,a1=d.d,a2=t.g
-a1=A.b([new A.c(b,a),d.gy7(),d.gAM(),new A.c(a0,a),new A.c(b,a1),d.gtG(),d.gwE(),new A.c(a0,a1)],a2)
-B.b.N(a1,this.Pw(a3))
-s=A.b([],a2)
-for(a0=a1.length,a2=c.a,r=c.b,q=0;q<a1.length;a1.length===a0||(0,A.p)(a1),++q){p=a1[q]
-o=p.a-a2
+Z8(a4,a5,a6,a7){var s,r,q,p,o,n,m,l,k,j,i,h,g,f,e,d=a6==="triangle"?a5*1.18:a5,c=a4.gaU(0),b=c.gaO(),a=c.c,a0=c.b,a1=c.a,a2=c.d,a3=t.g
+a2=A.b([new A.c(a,a0),c.gy7(),c.gAM(),new A.c(a1,a0),new A.c(a,a2),c.gtG(),c.gwE(),new A.c(a1,a2)],a3)
+B.b.N(a2,this.Pw(a4))
+s=A.b([],a3)
+for(a1=a2.length,a3=b.a,r=b.b,q=0;q<a2.length;a2.length===a1||(0,A.p)(a2),++q){p=a2[q]
+o=p.a-a3
 n=p.b-r
 if(Math.sqrt(o*o+n*n)<=0.01)continue
 if(B.b.bi(s,new A.aHl(p)))continue
-s.push(p)}B.b.dQ(s,new A.aHm(d))
-m=Math.max(25,e*0.32)
-for(a0=e+3,l=0;l<14;++l){k=a0+l*m
-for(a1=s.length,q=0;q<s.length;s.length===a1||(0,A.p)(s),++q){j=s[q]
-o=j.a
-n=o-a2
-i=j.b
-h=i-r
-g=n*n+h*h
-if(Math.sqrt(g)<=0.01)continue
-g=Math.sqrt(g)
-f=new A.c(o+n/g*k,i+h/g*k)
-if(this.aoe(f,e,a6))return f}}return new A.c(b,a).K(0,new A.c(e*1.12,-e*1.12))},
+s.push(p)}B.b.dQ(s,new A.aHm(c))
+m=a6==="circle"?Math.max(12,d*0.25):3
+l=Math.max(25,d*0.32)
+for(a1=d+m,k=0;k<14;++k){j=a1+k*l
+for(a2=s.length,q=0;q<s.length;s.length===a2||(0,A.p)(s),++q){i=s[q]
+o=i.a
+n=o-a3
+h=i.b
+g=h-r
+f=n*n+g*g
+if(Math.sqrt(f)<=0.01)continue
+f=Math.sqrt(f)
+e=new A.c(o+n/f*j,h+g/f*j)
+if(this.aoe(e,d,a7))return e}}return new A.c(a,a0).K(0,new A.c(a1,-a1))},
 aod(a,b,c){return this.Z8(a,b,c,null)},
 aCN(){var s,r,q,p,o,n,m,l=this,k=A.b([],t.t)
 for(s=l.e,r=s.length,q=0;p=s.length,q<p;s.length===r||(0,A.p)(s),++q){o=s[q]
