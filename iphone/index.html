@@ -14,7 +14,7 @@
     This is a placeholder for base href that will be replaced by the value of
     the `--base-href` argument provided to `flutter build`.
   -->
-  <base href="./">
+  <base href="/cad-field-book/iphone/">
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
@@ -81,7 +81,7 @@
           const handle = await window.showSaveFilePicker({
             suggestedName: name,
             types: [{
-              description: extension === '.xlsx' ? 'Excel 蜀咏悄蜿ｰ蟶ｳ' : '繝輔ぃ繧､繝ｫ',
+              description: extension === '.xlsx' ? 'Excel 写真台帳' : 'ファイル',
               accept: { [mimeType]: extension ? [extension] : [] }
             }]
           });
@@ -110,13 +110,15 @@
 
     window.cadFieldbookSaveTextWithPicker = async function (name, content, mimeType) {
       const blob = new Blob([content], { type: mimeType + ';charset=utf-8' });
+      const dot = name.lastIndexOf('.');
+      const extension = dot >= 0 ? name.substring(dot).toLowerCase() : '';
       if (typeof window.showSaveFilePicker === 'function') {
         try {
           const handle = await window.showSaveFilePicker({
             suggestedName: name,
             types: [{
-              description: 'DXF蝗ｳ髱｢',
-              accept: { 'application/dxf': ['.dxf'] }
+              description: extension === '.dxf' ? 'DXF図面' : 'データファイル',
+              accept: { [mimeType.split(';')[0]]: extension ? [extension] : [] }
             }]
           });
           const writable = await handle.createWritable();
@@ -125,7 +127,7 @@
           return true;
         } catch (error) {
           if (error && error.name === 'AbortError') return false;
-          throw error;
+          console.warn('Save picker unavailable; using download fallback.', error);
         }
       }
       const url = URL.createObjectURL(blob);

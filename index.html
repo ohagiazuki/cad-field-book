@@ -110,13 +110,15 @@
 
     window.cadFieldbookSaveTextWithPicker = async function (name, content, mimeType) {
       const blob = new Blob([content], { type: mimeType + ';charset=utf-8' });
+      const dot = name.lastIndexOf('.');
+      const extension = dot >= 0 ? name.substring(dot).toLowerCase() : '';
       if (typeof window.showSaveFilePicker === 'function') {
         try {
           const handle = await window.showSaveFilePicker({
             suggestedName: name,
             types: [{
-              description: 'DXF図面',
-              accept: { 'application/dxf': ['.dxf'] }
+              description: extension === '.dxf' ? 'DXF図面' : 'データファイル',
+              accept: { [mimeType.split(';')[0]]: extension ? [extension] : [] }
             }]
           });
           const writable = await handle.createWritable();
@@ -125,7 +127,7 @@
           return true;
         } catch (error) {
           if (error && error.name === 'AbortError') return false;
-          throw error;
+          console.warn('Save picker unavailable; using download fallback.', error);
         }
       }
       const url = URL.createObjectURL(blob);
