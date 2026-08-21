@@ -144,8 +144,10 @@
   </script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.getRegistrations().then((registrations) => {
-        registrations.forEach((registration) => registration.unregister());
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('cad-fieldbook-sw.js').catch((error) => {
+          console.warn('Offline preparation failed.', error);
+        });
       });
     }
   </script>
