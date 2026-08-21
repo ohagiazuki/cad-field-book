@@ -144,6 +144,12 @@
   </script>
   <script>
     if ('serviceWorker' in navigator) {
+      let refreshingForUpdate = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (refreshingForUpdate) return;
+        refreshingForUpdate = true;
+        window.location.reload();
+      });
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('cad-fieldbook-sw.js').catch((error) => {
           console.warn('Offline preparation failed.', error);
