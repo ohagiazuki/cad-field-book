@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <title>iPhone軽量表示サンプル</title>
+  <style>
+    *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#eef4f5;color:#17343a}
+    header{height:74px;padding:calc(10px + env(safe-area-inset-top)) 12px 8px;display:flex;align-items:center;gap:10px;background:#fff;border-bottom:1px solid #cad7d9;position:relative;z-index:5}
+    header strong{font-size:17px;white-space:nowrap}.counts{display:flex;gap:7px;margin-left:auto}.pill{padding:7px 10px;border-radius:999px;font-weight:700;font-size:14px;background:#dff3f1}.pill.red{background:#ffe1df;color:#b3261e}
+    button{border:0;border-radius:10px;background:#087f8c;color:#fff;padding:9px 11px;font-weight:700;font-size:14px}
+    #viewport{position:absolute;inset:74px 0 66px;overflow:hidden;touch-action:none;background:#f7faf9}
+    #stage{position:absolute;left:0;top:0;width:1110px;height:694px;transform-origin:0 0;will-change:transform}
+    #stage img{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;user-select:none;-webkit-user-drag:none}
+    .hit{position:absolute;border:2px solid transparent;border-radius:5px;background:transparent}
+    .hit.show{border:1.5px dashed #e53935;background:rgba(229,57,53,.025)}
+    .hit.selected{border:2px solid #e53935;background:rgba(229,57,53,.13);box-shadow:0 0 0 3px rgba(255,255,255,.8)}
+    footer{position:absolute;left:0;right:0;bottom:0;height:66px;padding:8px 12px calc(8px + env(safe-area-inset-bottom));display:flex;align-items:center;gap:8px;background:#fff;border-top:1px solid #cad7d9;z-index:5}
+    footer span{font-size:12px;color:#53666a}.info{margin-left:auto;font-weight:700;color:#087f8c}
+  </style>
+</head>
+<body>
+  <header>
+    <strong>軽量図面サンプル</strong>
+    <button id="fit">全体</button>
+    <button id="toggle">判定枠</button>
+    <div class="counts"><span class="pill">損傷 12</span><span class="pill red" id="selectedCount">選択 0</span></div>
+  </header>
+  <main id="viewport">
+    <div id="stage">
+      <img src="damage-background.webp" alt="WebP化した損傷図">
+      <button class="hit" style="left:155px;top:45px;width:125px;height:76px" aria-label="損傷1"></button>
+      <button class="hit" style="left:440px;top:43px;width:375px;height:75px" aria-label="損傷2"></button>
+      <button class="hit" style="left:345px;top:92px;width:345px;height:112px" aria-label="損傷3"></button>
+      <button class="hit" style="left:758px;top:145px;width:310px;height:62px" aria-label="損傷4"></button>
+      <button class="hit" style="left:118px;top:286px;width:66px;height:62px" aria-label="損傷5"></button>
+      <button class="hit" style="left:882px;top:287px;width:125px;height:128px" aria-label="損傷6"></button>
+      <button class="hit" style="left:220px;top:495px;width:300px;height:68px" aria-label="損傷7"></button>
+      <button class="hit" style="left:48px;top:492px;width:235px;height:70px" aria-label="損傷8"></button>
+      <button class="hit" style="left:80px;top:548px;width:650px;height:78px" aria-label="損傷9"></button>
+      <button class="hit" style="left:300px;top:604px;width:270px;height:70px" aria-label="損傷10"></button>
+      <button class="hit" style="left:740px;top:500px;width:265px;height:75px" aria-label="損傷11"></button>
+      <button class="hit" style="left:720px;top:552px;width:330px;height:118px" aria-label="損傷12"></button>
+    </div>
+  </main>
+  <footer><span>指2本で拡大／1本で移動<br>損傷をタップすると赤く選択</span><span class="info">背景WebP 64KB</span></footer>
+  <script>
+    const viewport=document.querySelector('#viewport'),stage=document.querySelector('#stage'),hits=[...document.querySelectorAll('.hit')];
+    let scale=1,x=0,y=0,start=null,startTransform=null,pointers=new Map(),startDistance=0,startScale=1,anchor=null;
+    const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+    function render(){stage.style.transform=`translate3d(${x}px,${y}px,0) scale(${scale})`}
+    function fit(){const r=viewport.getBoundingClientRect();scale=Math.min(r.width/1110,r.height/694)*.96;x=(r.width-1110*scale)/2;y=(r.height-694*scale)/2;render()}
+    function point(e){const r=viewport.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top}}
+    viewport.addEventListener('pointerdown',e=>{viewport.setPointerCapture(e.pointerId);pointers.set(e.pointerId,point(e));if(pointers.size===1){start=point(e);startTransform={x,y}}else if(pointers.size===2){const p=[...pointers.values()];startDistance=Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y);startScale=scale;anchor={x:(p[0].x+p[1].x)/2,y:(p[0].y+p[1].y)/2,wx:((p[0].x+p[1].x)/2-x)/scale,wy:((p[0].y+p[1].y)/2-y)/scale}}});
+    viewport.addEventListener('pointermove',e=>{if(!pointers.has(e.pointerId))return;pointers.set(e.pointerId,point(e));if(pointers.size===1&&start){const p=point(e);x=startTransform.x+p.x-start.x;y=startTransform.y+p.y-start.y;render()}else if(pointers.size===2){const p=[...pointers.values()],d=Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y),c={x:(p[0].x+p[1].x)/2,y:(p[0].y+p[1].y)/2};scale=clamp(startScale*d/startDistance,.35,8);x=c.x-anchor.wx*scale;y=c.y-anchor.wy*scale;render()}});
+    function end(e){pointers.delete(e.pointerId);if(pointers.size===1){start=[...pointers.values()][0];startTransform={x,y}}else{start=null}}
+    viewport.addEventListener('pointerup',end);viewport.addEventListener('pointercancel',end);
+    hits.forEach(h=>h.addEventListener('click',e=>{e.stopPropagation();h.classList.toggle('selected');document.querySelector('#selectedCount').textContent=`選択 ${document.querySelectorAll('.hit.selected').length}`}));
+    viewport.addEventListener('click',e=>{if(e.target!==viewport&&e.target!==stage)return;hits.forEach(h=>h.classList.remove('selected'));document.querySelector('#selectedCount').textContent='選択 0'});
+    document.querySelector('#fit').onclick=fit;document.querySelector('#toggle').onclick=()=>hits.forEach(h=>h.classList.toggle('show'));addEventListener('resize',fit);fit();
+  </script>
+</body>
+</html>
