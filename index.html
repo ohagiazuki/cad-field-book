@@ -14,7 +14,7 @@
     This is a placeholder for base href that will be replaced by the value of
     the `--base-href` argument provided to `flutter build`.
   -->
-  <base href="/cad-field-book/">
+  <base href="/">
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
@@ -143,7 +143,9 @@
     };
   </script>
   <script>
-    if ('serviceWorker' in navigator) {
+    const isLocalDevelopment =
+      location.hostname === '127.0.0.1' || location.hostname === 'localhost';
+    if ('serviceWorker' in navigator && !isLocalDevelopment) {
       let refreshingForUpdate = false;
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (refreshingForUpdate) return;
@@ -165,6 +167,27 @@
     For more details:
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
-  <script src="flutter_bootstrap.js" async></script>
+  <script>
+    (async () => {
+      // Local verification must always execute the newly built files. Keep
+      // IndexedDB/localStorage project data, but remove disposable PWA caches
+      // and registrations that otherwise make an old main.dart.js look current.
+      if (isLocalDevelopment && 'serviceWorker' in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(registrations.map((registration) => registration.unregister()));
+        const cacheKeys = await caches.keys();
+        await Promise.all(
+          cacheKeys
+            .filter((key) => key.startsWith('cad-fieldbook-offline-'))
+            .map((key) => caches.delete(key)),
+        );
+      }
+      const bootstrap = document.createElement('script');
+      bootstrap.src = isLocalDevelopment
+        ? `flutter_bootstrap.js?v=20260822-damage-table-left-row24`
+        : 'flutter_bootstrap.js';
+      document.body.appendChild(bootstrap);
+    })();
+  </script>
 </body>
 </html>
