@@ -39,7 +39,7 @@ _flutter.buildConfig = {"engineRevision":"69c8c61792f04cc809dfef0c910414fb9afc06
 if (location.hostname === '127.0.0.1' || location.hostname === 'localhost') {
   for (const build of _flutter.buildConfig.builds) {
     if (build.mainJsPath && !build.mainJsPath.includes('?')) {
-      build.mainJsPath += '?v=20260822-damage-table-left-row24';
+      build.mainJsPath += '?v=20260822-mode-marker-lock25';
     }
   }
 }
