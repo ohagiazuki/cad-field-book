@@ -4,7 +4,7 @@ const CACHE_PREFIX = 'cad-fieldbook-offline-';
 // Increment this value whenever the web application is published.
 // Static files are served cache-first, so reusing an old value would keep an
 // older main.dart.js even after a new build has been deployed.
-const CACHE_NAME = `${CACHE_PREFIX}20260822-pages-path-fix26`;
+const CACHE_NAME = `${CACHE_PREFIX}20260824-iphone-webp30`;
 const CORE_FILES = [
   './',
   'index.html',
