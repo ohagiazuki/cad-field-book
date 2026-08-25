@@ -45,4 +45,3 @@ if (location.hostname === '127.0.0.1' || location.hostname === 'localhost') {
 }
 
 _flutter.loader.load();
-
