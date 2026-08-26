@@ -16,6 +16,9 @@ Public Sub ImportPhotoLedgerPackage()
     Dim blockRow As Long
     Dim packageFolder As String
     Dim photoPath As String
+    Dim memoParts As Variant
+    Dim memoIndex As Long
+    Dim memoValue As String
 
     Set targetBook = ActiveWorkbook
     Set targetSheet = ActiveSheet
@@ -43,7 +46,21 @@ Public Sub ImportPhotoLedgerPackage()
         targetSheet.Cells(blockRow + 2, 8).Value = CsvText(csvSheet.Cells(sourceRow, 3).Value)
         targetSheet.Cells(blockRow + 3, 8).Value = CsvText(csvSheet.Cells(sourceRow, 4).Value)
         targetSheet.Cells(blockRow + 4, 8).Value = CsvText(csvSheet.Cells(sourceRow, 5).Value)
-        targetSheet.Cells(blockRow + 6, 6).Value = CsvText(csvSheet.Cells(sourceRow, 6).Value)
+        targetSheet.Range(targetSheet.Cells(blockRow + 6, 6), _
+            targetSheet.Cells(blockRow + 13, 9)).ClearContents
+        memoValue = CsvText(csvSheet.Cells(sourceRow, 6).Value)
+        memoParts = Split(memoValue, " | ")
+        For memoIndex = LBound(memoParts) To UBound(memoParts)
+            If blockRow + 6 + memoIndex > blockRow + 13 Then Exit For
+            With targetSheet.Range(targetSheet.Cells(blockRow + 6 + memoIndex, 6), _
+                                   targetSheet.Cells(blockRow + 6 + memoIndex, 9))
+                If .MergeCells Then .UnMerge
+                .Merge
+                .Cells(1, 1).Value = Trim$(CStr(memoParts(memoIndex)))
+                .WrapText = False
+                .VerticalAlignment = xlCenter
+            End With
+        Next memoIndex
 
         photoPath = packageFolder & Replace(CsvText(csvSheet.Cells(sourceRow, 7).Value), "/", Application.PathSeparator)
         If Len(Dir$(photoPath)) > 0 Then
@@ -90,8 +107,9 @@ Private Sub InsertPhotoInBlock(ByVal ws As Worksheet, ByVal photoPath As String,
 
     maxWidth = target.Width - 6
     maxHeight = target.Height - 6
-    scaleValue = 1
-    If picture.Width > maxWidth Then scaleValue = maxWidth / picture.Width
+    ' Enlarge small photos as well as shrink large photos, while preserving
+    ' the original aspect ratio and fitting the whole photo in the frame.
+    scaleValue = maxWidth / picture.Width
     If picture.Height * scaleValue > maxHeight Then scaleValue = maxHeight / picture.Height
     picture.Width = picture.Width * scaleValue
     picture.Height = picture.Height * scaleValue
