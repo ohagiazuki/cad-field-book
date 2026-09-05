@@ -38,7 +38,7 @@ _flutter.buildConfig = {"engineRevision":"69c8c61792f04cc809dfef0c910414fb9afc06
 
 for (const build of _flutter.buildConfig.builds) {
   if (build.mainJsPath && !build.mainJsPath.includes('?')) {
-    build.mainJsPath += '?v=20260905-damage-wrap170';
+    build.mainJsPath += '?v=20260905-sheet-switch174';
   }
 }
 
