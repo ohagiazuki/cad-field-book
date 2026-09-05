@@ -16,6 +16,7 @@ Public Sub ImportPhotoLedgerPackage()
     Dim blockRow As Long
     Dim packageFolder As String
     Dim photoPath As String
+    Dim photoDataNumber As String
     Dim memoParts As Variant
     Dim memoIndex As Long
     Dim memoValue As String
@@ -62,7 +63,11 @@ Public Sub ImportPhotoLedgerPackage()
             End With
         Next memoIndex
 
-        photoPath = packageFolder & Replace(CsvText(csvSheet.Cells(sourceRow, 7).Value), "/", Application.PathSeparator)
+        photoDataNumber = Format$(Val(CsvText(csvSheet.Cells(sourceRow, 7).Value)), "0000")
+        photoPath = packageFolder & "photos" & Application.PathSeparator & photoDataNumber & ".jpg"
+        If Len(Dir$(photoPath)) = 0 Then photoPath = packageFolder & "photos" & Application.PathSeparator & photoDataNumber & ".jpeg"
+        If Len(Dir$(photoPath)) = 0 Then photoPath = packageFolder & "photos" & Application.PathSeparator & photoDataNumber & ".png"
+        If Len(Dir$(photoPath)) = 0 Then photoPath = packageFolder & "photos" & Application.PathSeparator & photoDataNumber & ".webp"
         If Len(Dir$(photoPath)) > 0 Then
             InsertPhotoInBlock targetSheet, photoPath, blockRow, recordIndex + 1
         End If
