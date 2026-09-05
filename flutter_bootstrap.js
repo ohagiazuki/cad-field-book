@@ -36,11 +36,9 @@ if (!window._flutter) {
 _flutter.buildConfig = {"engineRevision":"69c8c61792f04cc809dfef0c910414fb9afc06cd","builds":[{"compileTarget":"dart2js","renderer":"canvaskit","mainJsPath":"main.dart.js"},{}]};
 
 
-if (location.hostname === '127.0.0.1' || location.hostname === 'localhost') {
-  for (const build of _flutter.buildConfig.builds) {
-    if (build.mainJsPath && !build.mainJsPath.includes('?')) {
-      build.mainJsPath += '?v=20260905-photo-crack-size166';
-    }
+for (const build of _flutter.buildConfig.builds) {
+  if (build.mainJsPath && !build.mainJsPath.includes('?')) {
+    build.mainJsPath += '?v=20260905-photo-crack-size167';
   }
 }
 
