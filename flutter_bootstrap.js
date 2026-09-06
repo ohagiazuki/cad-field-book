@@ -33,12 +33,12 @@ addEventListener("message", eventListener);
 if (!window._flutter) {
   window._flutter = {};
 }
-_flutter.buildConfig = {"engineRevision":"69c8c61792f04cc809dfef0c910414fb9afc06cd","builds":[{"compileTarget":"dart2js","renderer":"canvaskit","mainJsPath":"main.dart.js"},{}]};
+_flutter.buildConfig = {"engineRevision":"69c8c61792f04cc809dfef0c910414fb9afc06cd","builds":[{"compileTarget":"dart2js","renderer":"canvaskit","mainJsPath":"main.dart.js"}]};
 
 
 for (const build of _flutter.buildConfig.builds) {
   if (build.mainJsPath && !build.mainJsPath.includes('?')) {
-    build.mainJsPath += '?v=20260905-individual-leader-photo187';
+    build.mainJsPath += '?v=20260906-iphone-tap-info199';
   }
 }
 

@@ -50,6 +50,197 @@
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
+  <script src="vendor/exceljs.min.js"></script>
+  <script src="vendor/jszip.min.js"></script>
+  <script>
+    window.cadFieldbookBuildPhotoLedgerExcel = async function(templateBytes, entriesJson, title) {
+      if (!window.ExcelJS) throw new Error('Excel作成機能を読み込めませんでした');
+      const entries = JSON.parse(entriesJson || '[]');
+      const workbook = new ExcelJS.Workbook();
+      const localTemplateBytes = Uint8Array.from(templateBytes);
+      const templateBuffer = localTemplateBytes.buffer;
+      await workbook.xlsx.load(templateBuffer);
+      const sheet = workbook.getWorksheet('損傷様式') ||
+        workbook.worksheets.find(sheet => sheet.name.includes('損傷'));
+      if (!sheet) throw new Error('テンプレートに損傷様式シートがありません');
+
+      // 損傷写真の成果品には損傷様式だけを残す。
+      for (const otherSheet of [...workbook.worksheets]) {
+        if (otherSheet.id !== sheet.id) workbook.removeWorksheet(otherSheet.id);
+      }
+
+      const blockStart = 3;
+      const blockSize = 14;
+      const maxEntries = Math.floor((sheet.rowCount - blockStart + 1) / blockSize);
+      if (entries.length > maxEntries) {
+        throw new Error(`テンプレートの上限${maxEntries}件を超えています`);
+      }
+      const titleCell = sheet.getCell('B1');
+      if (titleCell) titleCell.value = `${title || '写真台帳'} 写真台帳`;
+
+      // 元の写真台帳ツールと同じく、写真3件を1ページとして
+      // データ件数から印刷範囲と改ページ位置を自動設定する。
+      const pageEntryCount = 3;
+      const paddedEntryCount = Math.max(
+        pageEntryCount,
+        Math.ceil(entries.length / pageEntryCount) * pageEntryCount
+      );
+      const lastPrintRow = 2 + paddedEntryCount * blockSize;
+      sheet.pageSetup = sheet.pageSetup || {};
+      sheet.pageSetup.orientation = 'portrait';
+      sheet.pageSetup.fitToPage = true;
+      sheet.pageSetup.fitToWidth = 1;
+      sheet.pageSetup.fitToHeight = 0;
+      sheet.pageSetup.printArea = `B1:I${lastPrintRow}`;
+      sheet.pageSetup.printTitlesRow = '1:2';
+      sheet.rowBreaks = [];
+      for (let pageEnd = pageEntryCount; pageEnd < paddedEntryCount; pageEnd += pageEntryCount) {
+        const breakAfterRow = 2 + pageEnd * blockSize;
+        sheet.rowBreaks.push({ id: breakAfterRow, min: 1, max: 9, man: 1 });
+      }
+
+      entries.forEach((entry, index) => {
+        const start = blockStart + index * blockSize;
+        sheet.getCell(start, 9).value = entry.photoNumber || '';
+        sheet.getCell(start + 1, 9).value = entry.spanNumber || '';
+        sheet.getCell(start + 2, 9).value = entry.memberType || '';
+        sheet.getCell(start + 3, 9).value = entry.memberNumber || '';
+        sheet.getCell(start + 4, 9).value = entry.damageType || '';
+        const memoLines = String(entry.memo || '')
+          .split(/\r?\n|\s*\|\s*/)
+          .map(value => value.trim())
+          .filter(Boolean);
+        for (let memoIndex = 0; memoIndex < 8; memoIndex++) {
+          const memoCell = sheet.getCell(start + 6 + memoIndex, 6);
+          memoCell.value = memoLines[memoIndex] || '';
+          memoCell.alignment = {
+            vertical: 'center', horizontal: 'left', wrapText: false
+          };
+        }
+        if (entry.photoData) {
+          const match = entry.photoData.match(/^data:image\/(png|jpeg|jpg|webp);base64,/i);
+          let extension = match ? match[1].toLowerCase() : 'jpeg';
+          if (extension === 'jpg') extension = 'jpeg';
+          if (extension === 'webp') extension = 'jpeg';
+          const imageId = workbook.addImage({
+            base64: entry.photoData,
+            extension: extension
+          });
+          sheet.addImage(imageId, {
+            tl: { col: 1.15, row: start - 0.2 },
+            br: { col: 4.85, row: start + 12.8 },
+            editAs: 'oneCell'
+          });
+        } else {
+          const blankCell = sheet.getCell(start, 2);
+          blankCell.value = '空白';
+          blankCell.font = {
+            ...(blankCell.font || {}),
+            size: 20,
+            color: { argb: 'FF808080' }
+          };
+          blankCell.alignment = {
+            horizontal: 'center', vertical: 'middle'
+          };
+        }
+      });
+      for (let index = entries.length; index < paddedEntryCount; index++) {
+        const start = blockStart + index * blockSize;
+        const blankCell = sheet.getCell(start, 2);
+        blankCell.value = '空白';
+        blankCell.font = {
+          ...(blankCell.font || {}),
+          size: 20,
+          color: { argb: 'FF808080' }
+        };
+        blankCell.alignment = {
+          horizontal: 'center', vertical: 'middle'
+        };
+      }
+      const output = await workbook.xlsx.writeBuffer();
+      return new Uint8Array(output);
+    };
+
+    window.cadFieldbookBuildPhotoLedgerUsedPhotosZip = async function(entriesJson) {
+      if (!window.JSZip) throw new Error('写真圧縮機能を読み込めませんでした');
+      const entries = JSON.parse(entriesJson || '[]');
+      const zip = new JSZip();
+      const folder = zip.folder('写真台帳使用');
+      const storedNames = new Set();
+      entries.forEach((entry, index) => {
+        if (!entry.photoData) return;
+        const numberMatch = String(entry.photoNumber || '').match(/\d+/);
+        const number = String(numberMatch ? Number(numberMatch[0]) : index + 1)
+          .padStart(4, '0');
+        const mimeMatch = entry.photoData.match(/^data:image\/(png|jpeg|jpg|webp);base64,/i);
+        const rawExtension = mimeMatch ? mimeMatch[1].toLowerCase() : 'jpg';
+        const extension = rawExtension === 'jpeg' ? 'jpg' : rawExtension;
+        const fileName = `${number}.${extension}`;
+        if (storedNames.has(fileName)) return;
+        storedNames.add(fileName);
+        folder.file(
+          fileName,
+          entry.photoData.replace(/^data:image\/[^;]+;base64,/i, ''),
+          { base64: true },
+        );
+      });
+      const output = await zip.generateAsync({
+        type: 'uint8array',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 6 },
+      });
+      return output;
+    };
+
+    window.cadFieldbookSavePhotoLedgerExcelAndPhotos = async function(
+      excelName,
+      excelBytes,
+      photosZipName,
+      photosZipBytes,
+      damageCsvName,
+      damageCsvContent
+    ) {
+      const excelType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      const excelBlob = new Blob([excelBytes], { type: excelType });
+      const zipBlob = new Blob([photosZipBytes], { type: 'application/zip' });
+      const damageCsvBlob = new Blob([damageCsvContent], { type: 'text/csv;charset=utf-8' });
+      // Package every output into one file. This guarantees the Excel, CSV and
+      // photo folder stay together even on iPad and embedded browsers.
+      const packageZip = new JSZip();
+      packageZip.file(excelName, excelBytes);
+      packageZip.file(damageCsvName, damageCsvContent);
+      const usedPhotosZip = await JSZip.loadAsync(photosZipBytes);
+      for (const path of Object.keys(usedPhotosZip.files)) {
+        const item = usedPhotosZip.files[path];
+        if (!item.dir) packageZip.file(path, await item.async('uint8array'));
+      }
+      const packageBytes = await packageZip.generateAsync({
+        type: 'uint8array',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 6 },
+      });
+      const packageName = excelName.replace(/\.xlsx$/i, '') + '_一式.zip';
+      const packageBlob = new Blob([packageBytes], { type: 'application/zip' });
+
+      if (typeof window.cadFieldbookSaveBinaryWithPicker === 'function') {
+        return await window.cadFieldbookSaveBinaryWithPicker(
+          packageName,
+          packageBytes,
+          'application/zip'
+        );
+      }
+      const url = URL.createObjectURL(packageBlob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = packageName;
+      anchor.style.display = 'none';
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      return true;
+    };
+  </script>
   <script>
     // Keep the selected app mode when iOS launches the saved home-screen icon.
     // Some iOS versions reopen the manifest start URL without its original query.
@@ -96,6 +287,21 @@
           console.warn('Save picker unavailable; using download fallback.', error);
         }
       }
+      // Safari on iPad/iPhone does not provide showSaveFilePicker. Opening the
+      // native share sheet lets the user choose "Save to Files" and therefore
+      // select an actual destination instead of silently downloading the file.
+      if (typeof navigator.share === 'function' && typeof File === 'function') {
+        try {
+          const file = new File([blob], name, { type: mimeType + ';charset=utf-8' });
+          if (!navigator.canShare || navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: name });
+            return true;
+          }
+        } catch (error) {
+          if (error && error.name === 'AbortError') return false;
+          console.warn('Share sheet unavailable; using download fallback.', error);
+        }
+      }
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
@@ -128,6 +334,18 @@
         } catch (error) {
           if (error && error.name === 'AbortError') return false;
           console.warn('Save picker unavailable; using download fallback.', error);
+        }
+      }
+      if (typeof navigator.share === 'function' && typeof File === 'function') {
+        try {
+          const file = new File([blob], name, { type: mimeType + ';charset=utf-8' });
+          if (!navigator.canShare || navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: name });
+            return true;
+          }
+        } catch (error) {
+          if (error && error.name === 'AbortError') return false;
+          console.warn('Share sheet unavailable; using download fallback.', error);
         }
       }
       const url = URL.createObjectURL(blob);
@@ -183,12 +401,9 @@
         );
       }
       const bootstrap = document.createElement('script');
-      bootstrap.src = isLocalDevelopment
-        ? `flutter_bootstrap.js?v=20260824-iphone-webp30`
-        : 'flutter_bootstrap.js';
+      bootstrap.src = 'flutter_bootstrap.js?v=20260906-iphone-tap-info199';
       document.body.appendChild(bootstrap);
     })();
   </script>
 </body>
 </html>
-
