@@ -4,7 +4,7 @@ const CACHE_PREFIX = 'cad-fieldbook-offline-';
 // Increment this value whenever the web application is published.
 // Static files are served cache-first, so reusing an old value would keep an
 // older main.dart.js even after a new build has been deployed.
-const CACHE_NAME = `${CACHE_PREFIX}20260906-project-settings-lock205`;
+const CACHE_NAME = `${CACHE_PREFIX}20260909-inspection-anchor-zoom235`;
 const CORE_FILES = [
   './',
   'index.html',
@@ -57,10 +57,12 @@ self.addEventListener('fetch', (event) => {
       try {
         const response = await fetch(event.request);
         const cache = await caches.open(CACHE_NAME);
-        cache.put('index.html', response.clone());
+        cache.put(event.request, response.clone());
         return response;
       } catch (_) {
-        return (await caches.match('index.html')) || (await caches.match('./'));
+        return (await caches.match(event.request)) ||
+          (await caches.match('index.html')) ||
+          (await caches.match('./'));
       }
     })());
     return;

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>点検モード | CAD野帳</title>
+  <link rel="stylesheet" href="inspection.css?v=235">
+</head>
+<body>
+  <header>
+    <button id="backButton" class="subtle">← CAD野帳へ戻る</button>
+    <strong>点検モード</strong>
+    <span id="globalStatus">左右のPDFを読み込んでください</span>
+  </header>
+  <main>
+    <section class="pane" id="elementPane">
+      <div class="paneHeader">
+        <label class="fileButton">部材要素番号図を選択<input id="elementFile" type="file" accept="application/pdf,.pdf"></label>
+        <span id="elementName">未選択</span>
+        <button id="elementColorToggle" class="colorToggle" aria-pressed="false">モノクロ</button>
+        <div class="zoomBar"><button id="elementZoomOut" title="縮小">−</button><span id="elementZoomLabel">100%</span><button id="elementZoomIn" title="拡大">＋</button><button id="elementFit">全体</button></div>
+      </div>
+      <div class="viewer" id="elementViewer"><div class="empty">左側に部材要素番号図を表示します</div></div>
+      <nav>
+        <button id="elementPrev">◀ 前</button><span id="elementPage">- / -</span><button id="elementNext">次 ▶</button>
+      </nav>
+    </section>
+    <div id="paneDivider" role="separator" aria-label="左右の表示幅を変更" aria-orientation="vertical"></div>
+    <section class="pane" id="photoPane">
+      <div class="paneHeader">
+        <label class="fileButton">損傷写真PDFを選択<input id="photoFile" type="file" accept="application/pdf,.pdf"></label>
+        <span id="photoName">未選択</span>
+        <div class="zoomBar"><button id="photoZoomOut" title="縮小">−</button><span id="photoZoomLabel">100%</span><button id="photoZoomIn" title="拡大">＋</button><button id="photoFit">全体</button></div>
+      </div>
+      <div class="jumpBar">
+        <label>損傷番号 <input id="damageInput" inputmode="numeric" pattern="[0-9]*" placeholder="01"></label>
+        <button id="damageJump">表示</button><span id="matchStatus"></span>
+      </div>
+      <div class="viewer" id="photoViewer"><div class="empty">右側に損傷写真PDFを表示します</div></div>
+      <nav>
+        <button id="photoPrev">◀ 前</button><span id="photoPage">- / -</span><button id="photoNext">次 ▶</button>
+      </nav>
+    </section>
+  </main>
+  <script src="../pdfjs/pdf.min.js"></script>
+  <script src="../tesseract/tesseract.min.js"></script>
+  <script src="inspection.js?v=235"></script>
+</body>
+</html>
