@@ -10,9 +10,44 @@
   const state = {
     element: { doc: null, page: 1, viewer: $('elementViewer'), label: $('elementPage'), zoom: 1, focus: null },
     photo: { doc: null, page: 1, viewer: $('photoViewer'), label: $('photoPage'), zoom: 1, focus: null, matches: null },
-    photoIndex: new Map(), renderToken: { element: 0, photo: 0 },
-    ocrWorker: null, ocrHotspots: new Map(), ocrJobs: new Map()
+    photoIndex: new Map(), currentDamage: null, renderToken: { element: 0, photo: 0 },
+    ocrWorker: null, ocrHotspots: new Map(), ocrJobs: new Map(),
+    drawMode: 'select', annotations: new Map()
   };
+  const cleanField = value => String(value || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+  function fieldRightOf(items, pattern) {
+    const label = items.find(item => pattern.test(cleanField(item.str)));
+    if (!label) return '';
+    const labelText = cleanField(label.str);
+    const inline = cleanField(labelText.replace(pattern, '').replace(/^[:：\s]+/, ''));
+    if (inline) return inline;
+    const lx = Number(label.transform?.[4] || 0), ly = Number(label.transform?.[5] || 0);
+    return cleanField(items.filter(item => {
+      const text = cleanField(item.str), x = Number(item.transform?.[4] || 0), y = Number(item.transform?.[5] || 0);
+      return text && item !== label && x > lx && Math.abs(y - ly) <= 5;
+    }).sort((a, b) => Number(a.transform?.[4] || 0) - Number(b.transform?.[4] || 0)).map(item => item.str).join(' '));
+  }
+  function photoRecordFromItems(items, focus, pageNumber, damageNumber, pageSpanNumber = '') {
+    if (!items?.length) return { damageNumber, pageNumber };
+    const xs = items.map(item => Number(item.transform?.[4] || 0));
+    const ys = items.map(item => Number(item.transform?.[5] || 0));
+    const midX = (Math.min(...xs) + Math.max(...xs)) / 2;
+    const midY = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const local = items.filter(item => {
+      const x = Number(item.transform?.[4] || 0), y = Number(item.transform?.[5] || 0);
+      return (focus.column ? x >= midX : x < midX) && (focus.row ? y < midY : y >= midY);
+    });
+    const labels = {
+      photoNumber: /写真番号/, spanNumber: /径間番号|径間/, memberName: /部材名|部材名称/,
+      memberNumber: /要素番号|部材番号/, damageType: /損傷の種類|損傷種類/,
+      damageLevel: /損傷程度/, memo: /メモ/
+    };
+    const record = { damageNumber, pageNumber };
+    for (const [key, pattern] of Object.entries(labels)) record[key] = fieldRightOf(local, pattern);
+    record.spanNumber = record.spanNumber || pageSpanNumber;
+    return record;
+  }
+  const annotationMetadata = () => state.currentDamage ? JSON.parse(JSON.stringify(state.currentDamage)) : null;
   const normalizeDigits = (value) => value.replace(/[０-９]/g, c => String(c.charCodeAt(0) - 0xFEE0));
   const damageNumbers = (value) => {
     const normalized = normalizeDigits(value).replace(/[\s　]+/g, '').replace(/損傷[OoＯ〇]/g, '損傷0');
@@ -77,6 +112,9 @@
       const content = await page.getTextContent();
       const strings = content.items.map(item => item.str || '');
       const viewport = page.getViewport({ scale: 1 });
+      // The span number is a page-level field in inspection-photo ledgers,
+      // outside the individual photo quadrants.
+      const pageSpanNumber = fieldRightOf(content.items, /径間番号|径間/);
       for (let i = 0; i < strings.length; i++) {
         const ownNumbers = damageNumbers(strings[i]);
         const windowStrings = strings.slice(i, i + 4);
@@ -94,7 +132,7 @@
         for (const number of numbers) {
           const entries = state.photoIndex.get(number) || [];
           if (!entries.some(entry => entry.page === pageNumber && entry.focus.column === focus.column && entry.focus.row === focus.row)) {
-            entries.push({ page: pageNumber, focus });
+            entries.push({ page: pageNumber, focus, record: photoRecordFromItems(content.items, focus, pageNumber, number, pageSpanNumber) });
             state.photoIndex.set(number, entries);
           }
         }
@@ -109,6 +147,7 @@
       await renderPhotoMatches();
       return;
     }
+    if (side === 'photo') target.viewer.classList.remove('matchedPhotos', 'zoomed');
     target.page = Math.max(1, Math.min(target.doc.numPages, target.page));
     const token = ++state.renderToken[side];
     const page = await target.doc.getPage(target.page);
@@ -138,25 +177,43 @@
     if (token !== state.renderToken[side]) return;
     target.label.textContent = `${target.page} / ${target.doc.numPages}`;
     $(side + 'ZoomLabel').textContent = `${Math.round(target.zoom * 100)}%`;
-      if (side === 'element') await addDamageHotspots(page, wrap, cssScale);
+      if (side === 'element') {
+        addDrawingLayer(wrap, target.page);
+        await addDamageHotspots(page, wrap, cssScale);
+      }
   }
   async function renderPhotoMatches() {
     const target = state.photo;
     const token = ++state.renderToken.photo;
-    const available = Math.max(320, target.viewer.clientWidth - 18);
+    const available = Math.max(120, target.viewer.clientWidth - 20);
+    const availableTotalHeight = Math.max(100, target.viewer.clientHeight - 16 - 8 * Math.max(0, target.matches.length - 1));
     const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
     const fragment = document.createDocumentFragment();
+    const referencePage = await target.doc.getPage(target.matches[0].page);
+    const referenceBase = referencePage.getViewport({ scale: 1 });
+    const referenceCropWidth = referenceBase.width / 2;
+    const referenceCropHeight = referenceBase.height * .315;
+    // In the inspection ledger template, left-column photos start about 44 pt
+    // inside their record while right-column photos start at the column edge.
+    // Shift right-column records by that difference so the actual photographs,
+    // rather than the outer record borders, share one vertical left edge.
+    const imageAlignmentOffset = target.matches.some(match => match.focus.column === 1) ? referenceBase.width * .055 : 0;
+    const commonScale = Math.min(
+      available / (referenceCropWidth + imageAlignmentOffset),
+      availableTotalHeight / (referenceCropHeight * target.matches.length)
+    ) * target.zoom;
     for (const match of target.matches) {
       const page = await target.doc.getPage(match.page);
       const base = page.getViewport({ scale: 1 });
       const crop = { x: match.focus.column * base.width / 2, y: base.height * (match.focus.row ? .55 : .255), width: base.width / 2, height: base.height * .315 };
-      const cssScale = available / crop.width * target.zoom;
+      const cssScale = commonScale;
       const factor = cssScale * dpr;
       const viewport = page.getViewport({ scale: factor });
       const wrap = document.createElement('div');
       wrap.className = 'pageWrap photoMatch';
       wrap.style.width = `${crop.width * cssScale}px`;
       wrap.style.height = `${crop.height * cssScale}px`;
+      wrap.style.left = match.focus.column === 1 ? `${imageAlignmentOffset * cssScale}px` : '0px';
       const canvas = document.createElement('canvas');
       canvas.width = Math.ceil(crop.width * factor);
       canvas.height = Math.ceil(crop.height * factor);
@@ -165,9 +222,80 @@
       await page.render({ canvasContext: canvas.getContext('2d'), viewport, transform: [1, 0, 0, 1, -crop.x * factor, -crop.y * factor] }).promise;
       if (token !== state.renderToken.photo) return;
     }
+    target.viewer.classList.add('matchedPhotos');
+    target.viewer.classList.toggle('zoomed', target.zoom > 1.001);
     target.viewer.replaceChildren(fragment);
     target.label.textContent = `${target.matches.length}件`;
     $('photoZoomLabel').textContent = `${Math.round(target.zoom * 100)}%`;
+  }
+  function annotationList(pageNumber) {
+    if (!state.annotations.has(pageNumber)) state.annotations.set(pageNumber, []);
+    return state.annotations.get(pageNumber);
+  }
+  function svgNode(name, attributes = {}) {
+    const node = document.createElementNS('http://www.w3.org/2000/svg', name);
+    for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, String(value));
+    return node;
+  }
+  function drawAnnotation(svg, item) {
+    let node;
+    if (item.type === 'rect') {
+      node = svgNode('rect', { x: Math.min(item.x1, item.x2), y: Math.min(item.y1, item.y2), width: Math.abs(item.x2 - item.x1), height: Math.abs(item.y2 - item.y1) });
+    } else if (item.type === 'text') {
+      node = svgNode('text', { x: item.x1, y: item.y1 });
+      node.textContent = item.text;
+    } else {
+      node = svgNode('line', { x1: item.x1, y1: item.y1, x2: item.x2, y2: item.y2 });
+      if (item.type === 'arrow') node.setAttribute('marker-end', 'url(#inspectionArrow)');
+    }
+    svg.appendChild(node);
+    return node;
+  }
+  function addDrawingLayer(wrap, pageNumber) {
+    const svg = svgNode('svg', { viewBox: '0 0 1000 1000', preserveAspectRatio: 'none' });
+    svg.classList.add('annotationLayer');
+    if (state.drawMode !== 'select') svg.classList.add('drawing');
+    const defs = svgNode('defs');
+    const marker = svgNode('marker', { id: 'inspectionArrow', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, orient: 'auto-start-reverse' });
+    marker.appendChild(svgNode('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: '#e53935', stroke: 'none' }));
+    defs.appendChild(marker); svg.appendChild(defs);
+    for (const item of annotationList(pageNumber)) drawAnnotation(svg, item);
+    let start = null;
+    let preview = null;
+    const point = event => {
+      const rect = svg.getBoundingClientRect();
+      return { x: (event.clientX - rect.left) / rect.width * 1000, y: (event.clientY - rect.top) / rect.height * 1000 };
+    };
+    svg.addEventListener('pointerdown', event => {
+      if (state.drawMode === 'select') return;
+      const p = point(event);
+      if (state.drawMode === 'text') {
+        const value = prompt('文字を入力してください', '');
+        if (value) { annotationList(pageNumber).push({ type: 'text', x1: p.x, y1: p.y, text: value, damageInfo: annotationMetadata() }); renderSide('element'); }
+        return;
+      }
+      start = p;
+      preview = drawAnnotation(svg, { type: state.drawMode, x1: p.x, y1: p.y, x2: p.x, y2: p.y });
+      svg.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    });
+    svg.addEventListener('pointermove', event => {
+      if (!start || !preview) return;
+      const p = point(event);
+      if (state.drawMode === 'rect') {
+        preview.setAttribute('x', Math.min(start.x, p.x)); preview.setAttribute('y', Math.min(start.y, p.y));
+        preview.setAttribute('width', Math.abs(p.x - start.x)); preview.setAttribute('height', Math.abs(p.y - start.y));
+      } else { preview.setAttribute('x2', p.x); preview.setAttribute('y2', p.y); }
+      event.preventDefault();
+    });
+    svg.addEventListener('pointerup', event => {
+      if (!start) return;
+      const p = point(event);
+      annotationList(pageNumber).push({ type: state.drawMode, x1: start.x, y1: start.y, x2: p.x, y2: p.y, damageInfo: annotationMetadata() });
+      start = null; preview = null;
+      renderSide('element');
+    });
+    wrap.appendChild(svg);
   }
   async function addDamageHotspots(page, wrap, cssScale) {
     const content = await page.getTextContent();
@@ -175,22 +303,42 @@
     const baseViewport = page.getViewport({ scale: cssScale });
     const found = new Set();
     for (let i = 0; i < items.length; i++) {
-      const sequences = [items[i].str || '', items.slice(i, i + 4).map(v => v.str || '').join('')];
-      const numbers = [...new Set(sequences.flatMap(damageNumbers))];
+      const windowItems = items.slice(i, i + 8);
+      const ownNumbers = damageNumbers(items[i].str || '');
+      // Do not assign a complete label found later in the look-ahead window
+      // to the current item's coordinates. Joining is only for labels that
+      // are genuinely split across separate PDF text items.
+      if (!ownNumbers.length && windowItems.some(item => damageNumbers(item.str || '').length)) continue;
+      const numbers = [...new Set(ownNumbers.length
+        ? ownNumbers
+        : damageNumbers(windowItems.map(item => item.str || '').join('')))];
       for (const number of numbers) {
         const key = `${number}:${i}`;
         if (found.has(key)) continue;
         found.add(key);
-        const transform = pdfjsLib.Util.transform(baseViewport.transform, items[i].transform);
+        const anchorOffset = ownNumbers.length ? 0 : Math.max(0, windowItems.findIndex(item => /損|傷/.test(item.str || '')));
+        const anchor = items[i + anchorOffset] || items[i];
+        const transform = pdfjsLib.Util.transform(baseViewport.transform, anchor.transform);
         const fontHeight = Math.max(12, Math.hypot(transform[2], transform[3]));
         const button = document.createElement('button');
         button.className = 'hotspot';
         button.dataset.label = `損傷${number.padStart(2, '0')}`;
         button.title = `${button.dataset.label} の写真を表示`;
-        button.style.left = `${transform[4] - 6}px`;
-        button.style.top = `${transform[5] + 5}px`;
-        button.style.width = `${Math.max(44, (items[i].width || 28) * cssScale + 14)}px`;
-        button.style.height = `${Math.max(28, fontHeight + 10)}px`;
+        const visualWidth = Math.max(20, (anchor.width || 28) * cssScale);
+        const visualHeight = Math.max(10, fontHeight);
+        const tapWidth = Math.max(32, visualWidth + 8);
+        const tapHeight = Math.max(24, visualHeight + 8);
+        // PDF text coordinates point to the baseline. Keep the generous tap
+        // target, but centre the visible outline on the actual glyph box.
+        button.style.left = `${transform[4] - (tapWidth - visualWidth) / 2}px`;
+        button.style.top = `${transform[5] - visualHeight - (tapHeight - visualHeight) / 2}px`;
+        button.style.width = `${tapWidth}px`;
+        button.style.height = `${tapHeight}px`;
+        const outline = document.createElement('span');
+        outline.className = 'hotspot-outline';
+        outline.style.width = `${visualWidth}px`;
+        outline.style.height = `${visualHeight}px`;
+        button.appendChild(outline);
         button.addEventListener('click', event => { event.stopPropagation(); jumpToDamage(number); });
         wrap.appendChild(button);
       }
@@ -251,10 +399,24 @@
     const measuredHeight = box.height * wrap.clientHeight / sourceHeight;
     const visualHeight = Math.min(18, Math.max(12, measuredHeight));
     const visualWidth = Math.min(48, Math.max(30, visualHeight * 2.7));
-    const tapWidth = Math.max(44, visualWidth + 12);
-    const tapHeight = Math.max(34, visualHeight + 10);
-    const centerX = (box.left + box.width / 2) * wrap.clientWidth / sourceWidth;
+    const tapWidth = Math.max(32, visualWidth + 6);
+    const tapHeight = Math.max(24, visualHeight + 5);
+    const displayLeft = box.left * wrap.clientWidth / sourceWidth;
+    const displayWidth = box.width * wrap.clientWidth / sourceWidth;
+    // OCR often returns "損傷03 ...説明文..." as one long word. In that
+    // case the damage label is at the beginning, not at the word centre.
+    const centerX = displayWidth > visualWidth * 1.7
+      ? displayLeft + visualWidth / 2
+      : displayLeft + displayWidth / 2;
     const centerY = (box.top + box.height / 2) * wrap.clientHeight / sourceHeight;
+    const label = numbers.map(number => `損傷${number.padStart(2, '0')}`).join('・');
+    const duplicate = [...wrap.querySelectorAll('.hotspot')].some(existing => {
+      if (existing.dataset.label !== label) return false;
+      const existingCenterX = existing.offsetLeft + existing.offsetWidth / 2;
+      const existingCenterY = existing.offsetTop + existing.offsetHeight / 2;
+      return Math.hypot(existingCenterX - centerX, existingCenterY - centerY) < 24;
+    });
+    if (duplicate) return;
     button.style.left = `${centerX - tapWidth / 2}px`;
     button.style.top = `${centerY - tapHeight / 2}px`;
     button.style.width = `${tapWidth}px`;
@@ -344,7 +506,7 @@
           const top = Math.min(...source.map(word => word.top));
           const right = Math.max(...source.map(word => word.left + word.width));
           const bottom = Math.max(...source.map(word => word.top + word.height));
-          hits.push({ number, box: { left: left - 12, top: top - 7, width: right - left + 24, height: bottom - top + 14 } });
+          hits.push({ number, box: { left, top, width: right - left, height: bottom - top } });
           }
         }
       };
@@ -534,16 +696,30 @@
       $('globalStatus').textContent = '画像認識に失敗しました。右上の番号入力をご利用ください';
     }
   }
+  function showPhotoPanel() {
+    $('photoPane').classList.remove('hiddenPanel');
+    setTimeout(() => renderSide('photo'), 30);
+  }
+  function hidePhotoPanel() { $('photoPane').classList.add('hiddenPanel'); }
   async function jumpToDamage(raw) {
     const number = String(Number(normalizeDigits(String(raw)).replace(/\D/g, '')));
     if (!number || number === 'NaN') return;
+    showPhotoPanel();
     $('damageInput').value = number.padStart(2, '0');
+    document.querySelectorAll('#elementViewer .hotspot').forEach(hotspot => {
+      hotspot.classList.toggle('selected', damageNumbers(hotspot.dataset.label || '').includes(number));
+    });
     if (!state.photo.doc) { $('matchStatus').textContent = '先に損傷写真PDFを選択してください'; return; }
     const entries = state.photoIndex.get(number);
     if (!entries?.length) { $('matchStatus').textContent = `損傷${number.padStart(2, '0')}が見つかりません`; return; }
     state.photo.page = entries[0].page;
     state.photo.focus = entries[0].focus;
     state.photo.matches = entries;
+    state.currentDamage = {
+      damageNumber: number,
+      elementPage: state.element.page,
+      records: entries.map(entry => entry.record || { damageNumber: number, pageNumber: entry.page })
+    };
     state.photo.zoom = 1;
     $('matchStatus').textContent = `損傷${number.padStart(2, '0')}：${entries.length}件（写真欄を拡大）`;
     await renderSide('photo');
@@ -561,7 +737,7 @@
   }
   function bindZoom(side) {
     const change = (factor) => {
-      state[side].zoom = Math.max(.5, Math.min(4, state[side].zoom * factor));
+      state[side].zoom = Math.max(.5, Math.min(8, state[side].zoom * factor));
       renderSide(side);
     };
     $(side + 'ZoomOut').addEventListener('click', () => change(1 / 1.25));
@@ -597,8 +773,11 @@
         return dy < best.distance ? { index: current, distance: dy } : best;
       }, { index: 0, distance: Infinity }).index;
       const rect = pages[index].getBoundingClientRect();
+      const viewerRect = viewer.getBoundingClientRect();
       return {
-        index, clientX, clientY,
+        index,
+        viewerX: clientX - viewerRect.left,
+        viewerY: clientY - viewerRect.top,
         xRatio: Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)),
         yRatio: Math.max(0, Math.min(1, (clientY - rect.top) / rect.height))
       };
@@ -607,12 +786,15 @@
       if (!anchor) return;
       const page = viewer.querySelectorAll('.pageWrap')[anchor.index];
       if (!page) return;
-      const rect = page.getBoundingClientRect();
-      const newX = rect.left + rect.width * anchor.xRatio;
-      const newY = rect.top + rect.height * anchor.yRatio;
-      viewer.scrollLeft += newX - anchor.clientX;
-      viewer.scrollTop += newY - anchor.clientY;
+      // Restore by content coordinates rather than viewport deltas. The page
+      // is horizontally centred while it is narrower than the viewer, so its
+      // screen rect changes discontinuously as zoom crosses that boundary.
+      const contentX = page.offsetLeft + page.offsetWidth * anchor.xRatio;
+      const contentY = page.offsetTop + page.offsetHeight * anchor.yRatio;
+      viewer.scrollLeft = Math.max(0, contentX - anchor.viewerX);
+      viewer.scrollTop = Math.max(0, contentY - anchor.viewerY);
     };
+    const afterLayout = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const clearPreview = () => {
       for (const page of viewer.querySelectorAll('.pageWrap')) {
         page.style.transform = '';
@@ -632,7 +814,7 @@
     }, { passive: false });
     viewer.addEventListener('touchmove', event => {
       if (event.touches.length !== 2 || !pinchStartDistance) return;
-      const nextZoom = Math.max(.5, Math.min(4, pinchStartZoom * distance(event.touches) / pinchStartDistance));
+      const nextZoom = Math.max(.5, Math.min(8, pinchStartZoom * distance(event.touches) / pinchStartDistance));
       previewRatio = nextZoom / pinchStartZoom;
       target.zoom = nextZoom;
       $(side + 'ZoomLabel').textContent = `${Math.round(nextZoom * 100)}%`;
@@ -649,6 +831,7 @@
       pinchStartDistance = 0;
       clearPreview();
       await renderSide(side);
+      await afterLayout();
       restoreAnchor(pinchAnchor);
       pinchAnchor = null;
     };
@@ -659,14 +842,24 @@
       event.preventDefault();
       const anchor = captureAnchor(event.clientX, event.clientY);
       const factor = Math.exp(-event.deltaY * .0015);
-      target.zoom = Math.max(.5, Math.min(4, target.zoom * factor));
+      target.zoom = Math.max(.5, Math.min(8, target.zoom * factor));
       $(side + 'ZoomLabel').textContent = `${Math.round(target.zoom * 100)}%`;
       clearTimeout(wheelTimer);
       wheelTimer = setTimeout(async () => {
         await renderSide(side);
+        await afterLayout();
         restoreAnchor(anchor);
       }, 90);
     }, { passive: false });
+    viewer.addEventListener('dblclick', async event => {
+      if (!target.doc) return;
+      const anchor = captureAnchor(event.clientX, event.clientY);
+      target.zoom = target.zoom > 1.05 ? 1 : 2.5;
+      await renderSide(side);
+      await afterLayout();
+      restoreAnchor(anchor);
+      event.preventDefault();
+    });
   }
   function bindPaneDivider() {
     const divider = $('paneDivider');
@@ -700,17 +893,97 @@
     divider.addEventListener('pointercancel', finish);
   }
   function escapeHtml(value) { const div = document.createElement('div'); div.textContent = value; return div.innerHTML; }
+  function csvCell(value) { return `"${String(value ?? '').replace(/"/g, '""')}"`; }
+  function exportDrawingCsv() {
+    const header = ['要素図ページ','作図種類','径間番号','損傷番号','写真番号','部材名','部材番号（要素番号）','損傷の種類','損傷程度','メモ','写真PDFページ'];
+    const rows = [header];
+    for (const [elementPage, drawings] of state.annotations) {
+      for (const drawing of drawings) {
+        const info = drawing.damageInfo;
+        const records = info?.records?.length ? info.records : [{}];
+        for (const record of records) rows.push([
+          elementPage, drawing.type, record.spanNumber || '', info?.damageNumber || '', record.photoNumber || '',
+          record.memberName || '', record.memberNumber || '', record.damageType || '', record.damageLevel || '',
+          record.memo || '', record.pageNumber || ''
+        ]);
+      }
+    }
+    if (rows.length === 1) { $('globalStatus').textContent = '損傷情報を付与した作図がありません'; return; }
+    const csv = '\uFEFF' + rows.map(row => row.map(csvCell).join(',')).join('\r\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a'); link.href = url; link.download = '点検作図情報.csv'; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    $('globalStatus').textContent = '作図に付与した損傷情報をCSV保存しました';
+  }
   $('elementFile').addEventListener('change', e => e.target.files[0] && loadPdf(e.target.files[0], 'element'));
   $('photoFile').addEventListener('change', e => e.target.files[0] && loadPdf(e.target.files[0], 'photo'));
   $('damageJump').addEventListener('click', () => jumpToDamage($('damageInput').value));
   $('damageInput').addEventListener('keydown', e => { if (e.key === 'Enter') jumpToDamage(e.target.value); });
+  $('drawingCsv').addEventListener('click', exportDrawingCsv);
   $('elementColorToggle').addEventListener('click', event => {
     const enabled = !state.element.viewer.classList.contains('monochrome');
     state.element.viewer.classList.toggle('monochrome', enabled);
     event.currentTarget.setAttribute('aria-pressed', String(enabled));
     event.currentTarget.textContent = enabled ? 'カラー' : 'モノクロ';
   });
+  $('topPhotoToggle').addEventListener('click', showPhotoPanel);
+  $('photoClose').addEventListener('click', hidePhotoPanel);
+  $('photoMaximize').addEventListener('click', event => {
+    const maximized = $('photoPane').classList.toggle('maximized');
+    event.currentTarget.setAttribute('aria-pressed', String(maximized));
+    event.currentTarget.textContent = maximized ? '元サイズ' : '最大化';
+    setTimeout(() => renderSide('photo'), 30);
+  });
+  let photoDrag = null;
+  $('photoPane').querySelector('.paneHeader').addEventListener('pointerdown', event => {
+    if (!$('photoPane').classList.contains('floating') || event.target.closest('button, label, input')) return;
+    const rect = $('photoPane').getBoundingClientRect();
+    photoDrag = { x: event.clientX, y: event.clientY, left: rect.left, top: rect.top };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  });
+  $('photoPane').querySelector('.paneHeader').addEventListener('pointermove', event => {
+    if (!photoDrag) return;
+    const pane = $('photoPane');
+    pane.style.left = `${Math.max(0, photoDrag.left + event.clientX - photoDrag.x)}px`;
+    pane.style.top = `${Math.max(48, photoDrag.top + event.clientY - photoDrag.y)}px`;
+    pane.style.right = 'auto';
+  });
+  $('photoPane').querySelector('.paneHeader').addEventListener('pointerup', () => { photoDrag = null; });
+  $('topDrawToggle').addEventListener('click', event => {
+    const bar = document.querySelector('.drawBar');
+    const opened = bar.classList.toggle('hiddenPanel');
+    event.currentTarget.classList.toggle('active', !opened);
+    event.currentTarget.textContent = opened ? '作図' : '作図終了';
+    if (opened) {
+      state.drawMode = 'select';
+      document.querySelectorAll('[data-draw]').forEach(item => item.classList.remove('active'));
+      const layer = $('elementViewer').querySelector('.annotationLayer');
+      if (layer) layer.classList.remove('drawing');
+    }
+    setTimeout(() => renderSide('element'), 30);
+  });
+  document.querySelectorAll('[data-draw]').forEach(button => button.addEventListener('click', () => {
+    if (button.dataset.draw === 'undo') {
+      const items = annotationList(state.element.page);
+      if (items.length) items.pop();
+      renderSide('element');
+      $('globalStatus').textContent = '最後の作図を戻しました';
+      return;
+    }
+    state.drawMode = button.dataset.draw;
+    document.querySelectorAll('[data-draw]').forEach(item => item.classList.remove('active'));
+    button.classList.add('active');
+    const layer = $('elementViewer').querySelector('.annotationLayer');
+    if (layer) layer.classList.toggle('drawing', state.drawMode !== 'select');
+    $('globalStatus').textContent = `作図モード：${button.textContent}`;
+  }));
   $('backButton').addEventListener('click', () => { location.href = '../?mode=draw'; });
+  const updateNetworkStatus = () => {
+    const online = navigator.onLine;
+    $('networkStatus').textContent = online ? 'オンライン' : 'オフライン';
+    $('networkStatus').classList.toggle('offline', !online);
+  };
+  addEventListener('online', updateNetworkStatus); addEventListener('offline', updateNetworkStatus); updateNetworkStatus();
   bindPager('element'); bindPager('photo');
   bindZoom('element'); bindZoom('photo');
   bindGestureZoom('element'); bindGestureZoom('photo');

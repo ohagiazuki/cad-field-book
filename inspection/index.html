@@ -5,15 +5,16 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>点検モード | CAD野帳</title>
-  <link rel="stylesheet" href="inspection.css?v=236">
+  <link rel="stylesheet" href="inspection.css?v=250">
 </head>
 <body>
   <header>
     <button id="backButton" class="subtle">← CAD野帳へ戻る</button>
     <strong>点検モード</strong>
     <span id="globalStatus">左右のPDFを読み込んでください</span>
+    <div class="headerTools"><button id="topPhotoToggle" class="subtle">写真</button><button id="topDrawToggle" class="subtle">作図</button><button id="drawingCsv" class="subtle">作図CSV</button><span id="networkStatus">オンライン</span></div>
   </header>
-  <main>
+  <main class="photoFloating">
     <section class="pane" id="elementPane">
       <div class="paneHeader">
         <label class="fileButton">部材要素番号図を選択<input id="elementFile" type="file" accept="application/pdf,.pdf"></label>
@@ -21,16 +22,19 @@
         <button id="elementColorToggle" class="colorToggle" aria-pressed="false">モノクロ</button>
         <div class="zoomBar"><button id="elementZoomOut" title="縮小">−</button><span id="elementZoomLabel">100%</span><button id="elementZoomIn" title="拡大">＋</button><button id="elementFit">全体</button></div>
       </div>
+      <div class="drawBar hiddenPanel" aria-label="図形作図コマンド"><strong>作図</strong><button data-draw="select">選択</button><button data-draw="line">線</button><button data-draw="arrow">矢印</button><button data-draw="rect">四角</button><button data-draw="text">文字</button><button data-draw="undo">戻す</button></div>
       <div class="viewer" id="elementViewer"><div class="empty">左側に部材要素番号図を表示します</div></div>
       <nav>
         <button id="elementPrev">◀ 前</button><span id="elementPage">- / -</span><button id="elementNext">次 ▶</button>
       </nav>
     </section>
     <div id="paneDivider" role="separator" aria-label="左右の表示幅を変更" aria-orientation="vertical"></div>
-    <section class="pane" id="photoPane">
+    <section class="pane floating hiddenPanel" id="photoPane">
       <div class="paneHeader">
         <label class="fileButton">損傷写真PDFを選択<input id="photoFile" type="file" accept="application/pdf,.pdf"></label>
         <span id="photoName">未選択</span>
+        <button id="photoMaximize" class="colorToggle" aria-pressed="false">最大化</button>
+        <button id="photoClose" class="colorToggle">閉じる</button>
         <div class="zoomBar"><button id="photoZoomOut" title="縮小">−</button><span id="photoZoomLabel">100%</span><button id="photoZoomIn" title="拡大">＋</button><button id="photoFit">全体</button></div>
       </div>
       <div class="jumpBar">
@@ -45,6 +49,6 @@
   </main>
   <script src="../pdfjs/pdf.min.js"></script>
   <script src="../tesseract/tesseract.min.js"></script>
-  <script src="inspection.js?v=236"></script>
+  <script src="inspection.js?v=250"></script>
 </body>
 </html>
