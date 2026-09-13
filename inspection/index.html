@@ -7,18 +7,18 @@
     // OCR uses Web Workers and WASM, which browsers block on file:// pages.
     // When this HTML is opened directly, switch to the local web server where
     // the exact same files can run with a normal HTTP origin.
-    if (location.protocol === 'file:') location.replace('http://127.0.0.1:8098/inspection/index.html?v=357');
+    if (location.protocol === 'file:') location.replace('http://127.0.0.1:8098/inspection/index.html?v=378');
   </script>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>点検モード | CAD野帳</title>
-  <link rel="stylesheet" href="inspection.css?v=357">
+  <link rel="stylesheet" href="inspection.css?v=378">
 </head>
 <body>
   <header>
     <button id="backButton" class="subtle">← CAD野帳へ戻る</button>
     <strong>点検モード</strong>
     <span id="globalStatus">左右のPDFを読み込んでください</span>
-    <div class="headerTools"><button id="recognitionResults" class="subtle hiddenPanel">未認識</button><button id="addHotspot" class="subtle">枠追加</button><button id="hotspotEditMode" class="subtle" aria-pressed="false">枠編集</button><button id="topPhotoToggle" class="subtle">写真</button><button id="topDrawToggle" class="subtle">作図</button><button id="topDamageList" class="subtle">損傷一覧</button><button id="drawingCsv" class="subtle">CSV</button><span id="networkStatus">オンライン</span></div>
+    <div class="headerTools"><button id="recognitionResults" class="subtle hiddenPanel">未認識</button><button id="addHotspot" class="subtle">枠追加</button><button id="hotspotEditMode" class="subtle" aria-pressed="false">枠編集</button><button id="topPhotoToggle" class="subtle">写真</button><button id="topDrawToggle" class="subtle">作図</button><button id="topDamageList" class="subtle">点検結果</button><button id="drawingCsv" class="subtle">CSV</button><span id="networkStatus">オンライン</span></div>
   </header>
   <div id="commonDrawTools" class="commonDrawTools hiddenPanel">
     <div class="drawTarget"><span>作図先</span><button id="drawTargetElement" class="active">要素番号図</button><button id="drawTargetPhoto">損傷写真</button></div>
@@ -62,14 +62,15 @@
     </section>
     <div id="photoDockDivider" class="photoDockDivider hiddenPanel" role="separator" aria-label="写真と要素図の表示幅を変更"></div>
   </main>
-  <aside id="damageListPane" class="damageListPane hiddenPanel" aria-label="損傷一覧">
-    <div class="damageListHeader"><strong>損傷一覧</strong><span id="damageListCount">0件</span><button id="damageListCsv">CSV保存</button><button id="damageListClose">閉じる</button></div>
-    <div class="damageListScroll"><table><thead><tr><th>径間</th><th>損傷</th><th>写真</th><th>部材名</th><th>記号</th><th>部材番号</th><th>損傷の種類</th><th>程度</th><th>メモ</th><th>作図数</th></tr></thead><tbody id="damageListBody"></tbody></table></div>
-    <div id="damageListResize" class="panelResizeHandle" aria-label="損傷一覧のサイズ変更"></div>
+  <aside id="damageListPane" class="damageListPane hiddenPanel" aria-label="点検結果一覧表">
+    <div class="damageListHeader"><strong>点検結果一覧表</strong><span id="damageListCount">0件</span><button id="damageListCsv">CSV保存</button><button id="damageListClose">閉じる</button></div>
+    <div class="damageListScroll"><table class="inspectionResultTable"><colgroup><col class="resultColDrawing"><col class="resultColDamage"><col class="resultColSpan"><col class="resultColMember"><col class="resultColSymbol"><col class="resultColElement"><col class="resultColType"><col class="resultColPattern"><col class="resultColClass"><col class="resultColLevel"><col class="resultColDiagnosis"><col class="resultColComment"><col class="resultColPhotoNumber"><col class="resultColPhotoMemo"><col class="resultColPhotoNumber"><col class="resultColPhotoMemo"><col class="resultColPhotoNumber"><col class="resultColPhotoMemo"><col class="resultColPhotoNumber"><col class="resultColPhotoMemo"></colgroup><thead><tr><th rowspan="2">作図ID</th><th rowspan="2">損傷ID</th><th rowspan="2">径間番号</th><th colspan="3">部材種別</th><th rowspan="2">損傷の種類</th><th rowspan="2">損傷パターン</th><th rowspan="2">分類</th><th rowspan="2">損傷程度の評価</th><th rowspan="2">健全性の診断結果</th><th rowspan="2">コメント</th><th colspan="2">写真1</th><th colspan="2">写真2</th><th colspan="2">写真3</th><th colspan="2">写真4</th></tr><tr><th>部材名称</th><th>記号</th><th>要素番号</th><th>番号</th><th>メモ</th><th>番号</th><th>メモ</th><th>番号</th><th>メモ</th><th>番号</th><th>メモ</th></tr></thead><tbody id="damageListBody"></tbody></table></div>
+    <div id="damageListResize" class="panelResizeHandle" aria-label="点検結果一覧表の高さ変更"></div>
   </aside>
   <aside id="assessmentListPane" class="damageListPane assessmentListPane hiddenPanel" aria-label="損傷程度の評価一覧">
-    <div class="damageListHeader"><strong>損傷程度の評価一覧</strong><span id="assessmentListCount">0行</span><button id="assessmentListClose">閉じる</button></div>
-    <div class="damageListScroll"><table><thead><tr><th>径間</th><th>部材名称</th><th>記号</th><th>要素番号</th><th>損傷の種類</th><th>程度</th><th>コメント</th></tr></thead><tbody id="assessmentListBody"></tbody></table></div>
+    <div class="damageListHeader"><strong>過年度評価一覧</strong><span id="assessmentListCount">0行</span><button id="assessmentListClose">閉じる</button></div>
+    <div class="damageListScroll"><table class="assessmentResultTable"><colgroup><col class="assessmentColSpan"><col class="assessmentColMember"><col class="assessmentColSymbol"><col class="assessmentColElement"><col class="assessmentColType"><col class="assessmentColPattern"><col class="assessmentColClass"><col class="assessmentColLevel"><col class="assessmentColDiagnosis"><col class="assessmentColComment"></colgroup><thead><tr><th>径間</th><th>部材名称</th><th>記号</th><th>要素番号</th><th>損傷の種類</th><th>損傷パターン</th><th>分類</th><th>程度</th><th>健全性の診断結果</th><th>コメント</th></tr></thead><tbody id="assessmentListBody"></tbody></table></div>
+    <div id="assessmentListResize" class="panelResizeHandle" aria-label="過年度評価一覧の高さ変更"></div>
   </aside>
   <aside id="recognitionResultPane" class="recognitionResultPane hiddenPanel" aria-label="損傷番号の確認結果"><div class="recognitionResultHeader"><strong>損傷番号の確認結果</strong><button id="recognitionResultClose">閉じる</button></div><p id="recognitionResultSummary"></p><div id="recognitionResultList"></div></aside>
   <aside id="hotspotEditor" class="hotspotEditor hiddenPanel" aria-label="オレンジ枠の編集"><div><strong>オレンジ枠を編集</strong><button id="hotspotEditorClose">閉じる</button></div><label>損傷番号<input id="hotspotNumberInput" inputmode="numeric" placeholder="例：01 または 16,17"></label><p>枠の移動は、図面上のオレンジ枠をドラッグします。</p><div class="hotspotEditorActions"><button id="hotspotNumberSave">番号を修正</button><button id="hotspotDelete" class="dangerButton">枠を削除</button></div></aside>
@@ -83,6 +84,6 @@
   </div>
   <script src="../pdfjs/pdf.min.js"></script>
   <script src="../tesseract/tesseract.min.js"></script>
-  <script src="inspection.js?v=357"></script>
+  <script src="inspection.js?v=378"></script>
 </body>
 </html>

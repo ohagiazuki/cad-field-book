@@ -22,7 +22,7 @@
   const state = {
     element: { doc: null, page: 1, viewer: $('elementViewer'), label: $('elementPage'), zoom: 1, focus: null },
     photo: { doc: null, page: 1, viewer: $('photoViewer'), label: $('photoPage'), zoom: 1, focus: null, matches: null, pageOverview: false, fitPaneAfterRender: false, dockMode: 'free' },
-    photoIndex: new Map(), damageNumberDigits: 2, assessmentIndex: new Map(), assessmentRows: [], assessmentDoc: null, currentDamage: null, renderToken: { element: 0, photo: 0 },
+    photoIndex: new Map(), damageNumberDigits: 2, assessmentIndex: new Map(), assessmentRows: [], assessmentDoc: null, assessmentFocusNumbers: [], assessmentFocusSpan: '', currentDamage: null, renderToken: { element: 0, photo: 0 },
     ocrWorker: null, ocrHotspots: new Map(), textDamageNumbers: new Map(), elementSpanNumbers: new Map(), ocrJobs: new Map(), ocrProgress: null, missingDamageNumbers: [], missingPhotoNumbers: [], ignoredMissing: new Set(), manualHotspots: new Map(), hotspotOverrides: new Map(), pendingManualDamage: null,
     drawMode: 'select', previousDrawMode: 'free', drawingSide: 'element', pendingImage: '', annotations: new Map(), photoAnnotations: new Map(), activePhotoAnnotationKey: null, selectedAnnotation: null, annotationCopyArmed: false, hotspotEditMode: false, editingHotspot: null
   };
@@ -225,8 +225,20 @@
       const content = await page.getTextContent();
       const items = content.items;
       const viewport = page.getViewport({ scale: 1 });
+      const annotations = await page.getAnnotations({ intent: 'display' }).catch(() => []);
+      const formComments = annotations.map(annotation => {
+        const name = cleanField(String(annotation.fieldName || annotation.titleObj?.str || annotation.title || ''));
+        const raw = annotation.fieldValue ?? annotation.contentsObj?.str ?? annotation.contents ?? '';
+        const text = cleanField(Array.isArray(raw) ? raw.join(' ') : String(raw));
+        const rect = annotation.rect || [];
+        return { name, text, rect, y: rect.length >= 4 ? (Number(rect[1]) + Number(rect[3])) / 2 : NaN };
+      }).filter(annotation => annotation.text && (/コメント|備考|所見|comment/i.test(annotation.name) || (annotation.rect.length >= 4 && Math.min(annotation.rect[0], annotation.rect[2]) >= viewport.width * .62)));
       const spanNumber = fieldRightOf(items, /径間番号|径間/);
       const headerItem = items.find(item => /要素番号/.test(cleanField(item.str)));
+      const diagnosisHeader = items.find(item => /健全性.*診断|診断結果|診断区分/.test(cleanField(item.str)));
+      const commentHeader = items.find(item => /コメント|備考|所見/.test(cleanField(item.str)));
+      const diagnosisStartX = diagnosisHeader ? Number(diagnosisHeader.transform?.[4] || 0) - 3 : NaN;
+      const commentStartX = commentHeader ? Number(commentHeader.transform?.[4] || 0) - 3 : NaN;
       const headerY = Number(headerItem?.transform?.[5] || viewport.height * .70);
       const dataItems = items.filter(item => {
         const x = Number(item.transform?.[4] || 0), y = Number(item.transform?.[5] || 0);
@@ -240,20 +252,51 @@
         line.items.push(item);
       }
       const boundaries = [.055, .121, .162, .202, .282, .377, .437, .526, .646, .94].map(ratio => viewport.width * ratio);
+      const parsedLines = [];
       for (const line of lines) {
         const columns = Array.from({ length: 9 }, () => []);
         for (const item of line.items) {
           const x = Number(item.transform?.[4] || 0);
-          const column = Math.max(0, Math.min(8, boundaries.findIndex((boundary, index) => index > 0 && x < boundary) - 1));
+          const column = Number.isFinite(commentStartX) && x >= commentStartX ? 8
+            : Number.isFinite(diagnosisStartX) && x >= diagnosisStartX ? 7
+            : Math.max(0, Math.min(8, boundaries.findIndex((boundary, index) => index > 0 && x < boundary) - 1));
           columns[column].push(item);
         }
         const value = index => cleanField(columns[index].sort((a, b) => Number(a.transform?.[4] || 0) - Number(b.transform?.[4] || 0)).map(item => item.str).join(' '));
-        const row = {
-          spanNumber, memberName: value(0), memberSymbol: value(1), memberNumber: value(2),
-          damageType: value(3), damagePattern: value(4), classification: value(5),
-          damageLevel: value(6), diagnosis: value(7), comment: value(8), pageNumber,
-          source: '損傷程度の評価'
-        };
+        parsedLines.push({ y: line.y, values: Array.from({ length: 9 }, (_, index) => value(index)) });
+      }
+      const logicalRows = [];
+      let currentRow = null;
+      const appendCell = (before, after) => cleanField([before, after].filter(Boolean).join(' '));
+      for (const line of parsedLines) {
+        const hasMemberNumber = /[0-9]/.test(line.values[2] || '');
+        if (hasMemberNumber) {
+          if (currentRow) logicalRows.push(currentRow);
+          currentRow = { values: [...line.values], y: line.y };
+        } else if (currentRow) {
+          // PDF text extraction returns wrapped table cells as separate text
+          // lines. Keep every continuation in its original column, especially
+          // diagnosis (7) and comment (8), until the next member row begins.
+          for (let index = 0; index < currentRow.values.length; index++) currentRow.values[index] = appendCell(currentRow.values[index], line.values[index]);
+        }
+      }
+      if (currentRow) logicalRows.push(currentRow);
+      // Comments entered into PDF form fields are not included in
+      // getTextContent(). Attach those widget values to the table row whose
+      // vertical range contains the field, or to the nearest row.
+      for (const annotation of formComments) {
+        if (!logicalRows.length) break;
+        const containing = logicalRows.filter(row => annotation.rect.length >= 4 && row.y >= Math.min(annotation.rect[1], annotation.rect[3]) - 3 && row.y <= Math.max(annotation.rect[1], annotation.rect[3]) + 3);
+        const target = (containing.length ? containing : logicalRows).reduce((best, row) => Math.abs(row.y - annotation.y) < Math.abs(best.y - annotation.y) ? row : best);
+        target.values[8] = appendCell(target.values[8], annotation.text);
+      }
+      for (const logical of logicalRows) {
+        const value = index => logical.values[index] || '';
+        const diagnosisAndComment = value(7);
+        const separated = diagnosisAndComment.match(/^\s*(IV|III|II|I|Ⅰ|Ⅱ|Ⅲ|Ⅳ|[1-4])\s*[|｜]?\s*(.*)$/i);
+        const diagnosis = separated ? separated[1].toUpperCase() : (/損傷/.test(diagnosisAndComment) ? '' : diagnosisAndComment);
+        const joinedComment = appendCell(separated ? separated[2] : (/損傷/.test(diagnosisAndComment) ? diagnosisAndComment : ''), value(8));
+        const row = { spanNumber, memberName: value(0), memberSymbol: value(1), memberNumber: value(2), damageType: value(3), damagePattern: value(4), classification: value(5), damageLevel: value(6), diagnosis, comment: joinedComment, pageNumber, source: '損傷程度の評価' };
         if (!row.memberNumber || !/[0-9]/.test(row.memberNumber) || !row.damageType) continue;
         row.damageNumbers = [...new Set(damageNumbers(row.comment))];
         state.assessmentRows.push(row);
@@ -280,16 +323,39 @@
     $('assessmentListCount').textContent = `${state.assessmentRows.length}行`;
     if (!state.assessmentRows.length) {
       const tr = document.createElement('tr');
-      tr.innerHTML = '<td colspan="7" class="damageListEmpty">損傷程度の評価PDFを読み込むと一覧が表示されます</td>';
+      tr.innerHTML = '<td colspan="10" class="damageListEmpty">損傷程度の評価PDFを読み込むと一覧が表示されます</td>';
       body.appendChild(tr); return;
     }
     for (const row of state.assessmentRows) {
       const tr = document.createElement('tr');
-      for (const value of [row.spanNumber, row.memberName, row.memberSymbol, row.memberNumber, row.damageType, row.damageLevel, row.comment]) {
+      const focusedNumbers = state.assessmentFocusNumbers || [];
+      const numberMatches = (row.damageNumbers || []).some(number => focusedNumbers.includes(String(number)));
+      const spanMatches = !state.assessmentFocusSpan || !row.spanNumber || String(row.spanNumber) === String(state.assessmentFocusSpan);
+      tr.classList.toggle('assessmentMatched', numberMatches && spanMatches);
+      for (const value of [row.spanNumber, row.memberName, row.memberSymbol, row.memberNumber, row.damageType, row.damagePattern, row.classification, row.damageLevel, row.diagnosis, row.comment]) {
         const td = document.createElement('td'); td.textContent = value || ''; tr.appendChild(td);
       }
+      tr.addEventListener('click', async () => {
+        const numbers = [...new Set(row.damageNumbers || [])];
+        if (!numbers.length) {
+          $('globalStatus').textContent = 'この評価行のコメントから損傷番号を確認できません';
+          return;
+        }
+        state.assessmentFocusNumbers = numbers.map(String);
+        state.assessmentFocusSpan = String(row.spanNumber || '');
+        renderAssessmentList();
+        await jumpToDamage(numbers, row.spanNumber || null);
+      });
       body.appendChild(tr);
     }
+  }
+  function focusAssessmentRows(numbers, spanNumber = '') {
+    state.assessmentFocusNumbers = [...new Set(numbers.map(number => String(Number(number))).filter(number => number !== 'NaN' && number !== '0'))];
+    state.assessmentFocusSpan = String(spanNumber || '');
+    const pane = $('assessmentListPane');
+    if (pane.classList.contains('hiddenPanel')) return;
+    renderAssessmentList();
+    requestAnimationFrame(() => pane.querySelector('.assessmentMatched')?.scrollIntoView({ block: 'center', behavior: 'smooth' }));
   }
   function visibleElementDamageNumbers() {
     const result = new Set();
@@ -315,7 +381,7 @@
         damageNumber: String(damageNumber || source.damageNumber || ''), spanNumber: row.spanNumber || source.spanNumber || '',
         memberName: row.memberName || source.memberName || '', memberSymbol: row.memberSymbol || source.memberSymbol || '',
         memberNumber: row.memberNumber || source.memberNumber || '', damageType: row.damageType || source.damageType || '',
-        damageLevel: row.damageLevel || source.damageLevel || '', memo: row.comment || source.memo || '', assessmentPage: row.pageNumber
+        damagePattern: row.damagePattern || source.damagePattern || '', classification: row.classification || source.classification || '', damageLevel: row.damageLevel || source.damageLevel || '', diagnosis: row.diagnosis || source.diagnosis || '', memo: row.comment || source.memo || '', assessmentPage: row.pageNumber
       }))
     };
     closeDrawingRegistration();
@@ -337,7 +403,7 @@
     for (const row of candidates) {
       const button = document.createElement('button'); button.className = 'drawingCandidate';
       const matching = (row.damageNumbers || []).filter(number => visible.has(number));
-      button.innerHTML = `<strong>損傷${escapeHtml(matching.map(number => number.padStart(2, '0')).join('・'))}　${escapeHtml(row.memberName)} ${escapeHtml(row.memberSymbol)} ${escapeHtml(row.memberNumber)}</strong><span>${escapeHtml(row.damageType)}${row.damageLevel ? `　程度 ${escapeHtml(row.damageLevel)}` : ''}</span><small>${escapeHtml(row.comment)}</small>`;
+      button.innerHTML = `<strong>損傷${escapeHtml(matching.map(number => number.padStart(2, '0')).join('・'))}　${escapeHtml(row.memberName)} ${escapeHtml(row.memberSymbol)} ${escapeHtml(row.memberNumber)}</strong><span>${escapeHtml(row.damageType)}${row.damagePattern ? `　パターン ${escapeHtml(row.damagePattern)}` : ''}${row.classification ? `　分類 ${escapeHtml(row.classification)}` : ''}${row.damageLevel ? `　程度 ${escapeHtml(row.damageLevel)}` : ''}${row.diagnosis ? `　診断 ${escapeHtml(row.diagnosis)}` : ''}</span><small>${escapeHtml(row.comment)}</small>`;
       button.addEventListener('click', () => attachAssessmentToDrawing(item, row));
       list.appendChild(button);
     }
@@ -510,8 +576,14 @@
       await page.render({ canvasContext: canvas.getContext('2d'), viewport, transform: [1, 0, 0, 1, -crop.x * factor, -crop.y * factor] }).promise;
       if (token !== state.renderToken.photo) return;
       const trimmed = trimCanvasWhitespace(canvas, dpr);
-      wrap.style.width = `${trimmed.width}px`;
-      wrap.style.height = `${trimmed.height}px`;
+      // Trimming the record removes PDF margins, but it also makes the result
+      // narrower than the window and leaves grey bands on both sides. Scale
+      // the trimmed record back to the full available width while preserving
+      // its aspect ratio (and the user's current zoom).
+      const fittedWidth = available * target.zoom;
+      const fittedScale = fittedWidth / Math.max(1, trimmed.width);
+      wrap.style.width = `${fittedWidth}px`;
+      wrap.style.height = `${trimmed.height * fittedScale}px`;
       wrap.dataset.photoPage = String(match.page);
       wrap.dataset.photoViewX = String((crop.x + (trimmed.left || 0) / cssScale) / base.width * 1000);
       wrap.dataset.photoViewY = String((crop.y + (trimmed.top || 0) / cssScale) / base.height * 1000);
@@ -728,12 +800,12 @@
     for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, String(value));
     return node;
   }
-  function drawAnnotation(svg, item) {
+  function drawAnnotation(svg, item, displayFontScale = 1) {
     let node;
     if (item.type === 'image') {
       node = svgNode('image', { x: Math.min(item.x1, item.x2), y: Math.min(item.y1, item.y2), width: Math.abs(item.x2 - item.x1), height: Math.abs(item.y2 - item.y1), href: item.imageData, preserveAspectRatio: 'xMidYMid meet' });
     } else if (item.type === 'boxedNumber') {
-      const fontSize = item.fontSize || 18;
+      const fontSize = (item.fontSize || 18) * displayFontScale;
       const width = Math.max(fontSize * 1.8, String(item.text || '').length * fontSize * .72 + fontSize);
       const height = fontSize * 1.65;
       node = svgNode('g');
@@ -757,7 +829,7 @@
         const label = svgNode('text', { x: Math.min(item.x2, tail), y: item.y2 - 8 });
         label.textContent = item.text;
         label.style.fill = item.color || '#e53935';
-        label.style.fontSize = `${item.fontSize || 18}px`;
+        label.style.fontSize = `${(item.fontSize || 18) * displayFontScale}px`;
         svg.appendChild(label);
       }
     } else {
@@ -768,7 +840,7 @@
     node.style.stroke = color;
     node.style.strokeWidth = String(item.width || 3);
     if (item.dash) node.style.strokeDasharray = item.dash;
-    if (item.type === 'text') { node.style.fill = color; node.style.fontSize = `${item.fontSize || 18}px`; }
+    if (item.type === 'text') { node.style.fill = color; node.style.fontSize = `${(item.fontSize || 18) * displayFontScale}px`; }
     svg.appendChild(node);
     return node;
   }
@@ -787,12 +859,17 @@
       // inspection photographs. Apply this once to existing saved drawings as
       // well as newly-created ones, without changing ordinary text or the
       // element-diagram side.
-      if (side === 'photo' && item.type === 'boxedNumber' && !item.photoNumberTripleSize) {
-        item.fontSize = Math.min(96, (item.fontSize || Number($('drawFontSize').value) || 4.5) * 3);
+      if (side === 'photo' && item.type === 'boxedNumber' && item.photoNumberScaleApplied !== 9) {
+        // v356 already enlarged some photo numbers to 3x. The requested size
+        // is now three times that visible size, i.e. 9x the common drawing
+        // default. Migrate both old and previously-enlarged annotations once.
+        const appliedScale = item.photoNumberScaleApplied || (item.photoNumberTripleSize ? 3 : 1);
+        item.fontSize = Math.min(144, (item.fontSize || Number($('drawFontSize').value) || 4.5) * (9 / appliedScale));
         item.photoNumberTripleSize = true;
+        item.photoNumberScaleApplied = 9;
       }
       item.id ||= annotationId();
-      const node = drawAnnotation(svg, item);
+      const node = drawAnnotation(svg, item, side === 'photo' ? 1 / Math.max(.05, state.photo.zoom) : 1);
       node.classList.add('selectableAnnotation');
       node.dataset.annotationIndex = String(index);
       node.addEventListener('click', event => {
@@ -849,8 +926,8 @@
           const style = drawingStyle();
           // On photographs, commit the 300% font size at creation time. This
           // avoids depending on a later redraw to enlarge the number.
-          if (side === 'photo') style.fontSize *= 3;
-          const item = { id: annotationId(), type: 'boxedNumber', x1: p.x, y1: p.y, text: value, ...style, photoNumberTripleSize: side === 'photo', damageInfo: annotationMetadata() };
+          if (side === 'photo') style.fontSize *= 9;
+          const item = { id: annotationId(), type: 'boxedNumber', x1: p.x, y1: p.y, text: value, ...style, photoNumberTripleSize: side === 'photo', photoNumberScaleApplied: side === 'photo' ? 9 : undefined, damageInfo: annotationMetadata() };
           annotationList(pageNumber, side).push(item);
           if (side === 'photo') mirrorPhotoRecordAnnotation(wrap, pageNumber, item);
           renderSide(side);
@@ -874,7 +951,7 @@
       start = p;
       freePoints = state.drawMode === 'free' ? [p] : null;
       const previewType = ['screenCopy', 'image'].includes(state.drawMode) ? 'rect' : state.drawMode;
-      preview = drawAnnotation(svg, { type: previewType, x1: p.x, y1: p.y, x2: p.x, y2: p.y, points: freePoints, ...drawingStyle() });
+      preview = drawAnnotation(svg, { type: previewType, x1: p.x, y1: p.y, x2: p.x, y2: p.y, points: freePoints, ...drawingStyle() }, side === 'photo' ? 1 / Math.max(.05, state.photo.zoom) : 1);
       svg.setPointerCapture(event.pointerId);
       event.preventDefault();
     });
@@ -2144,6 +2221,7 @@
       ? String(state.elementSpanNumbers.get(state.element.page) || '')
       : normalizeDigits(String(requestedSpan)).replace(/[^0-9A-Za-z_-]/g, '');
     $('photoSpanInput').value = currentSpan;
+    focusAssessmentRows(numbers, currentSpan);
     const combinedEntries = numbers.flatMap(value => (state.photoIndex.get(value) || [])
       .filter(entry => !currentSpan || !entry.record?.spanNumber || String(entry.record.spanNumber) === currentSpan)
       .map(entry => ({ ...entry, damageNumber: value })));
@@ -2180,7 +2258,7 @@
         const record = { ...(entry.record || { damageNumber: entryNumber, pageNumber: entry.page }) };
         const assessment = assessmentFor(entryNumber, record);
         if (assessment) {
-          for (const key of ['spanNumber', 'memberName', 'memberSymbol', 'memberNumber', 'damageType', 'damageLevel']) if (assessment[key]) record[key] = assessment[key];
+          for (const key of ['spanNumber', 'memberName', 'memberSymbol', 'memberNumber', 'damageType', 'damagePattern', 'classification', 'damageLevel', 'diagnosis']) if (assessment[key]) record[key] = assessment[key];
           if (assessment.comment) record.memo = assessment.comment;
           record.assessmentPage = assessment.pageNumber;
         }
@@ -2188,7 +2266,7 @@
       })
     };
     state.photo.zoom = 1;
-    $('matchStatus').textContent = `${numbers.map(value => `損傷${value.padStart(2, '0')}`).join('・')}：${entries.length}件（写真を縦並び表示）`;
+    $('matchStatus').textContent = '';
     showPhotoPanel(false);
     try {
       await renderSide('photo');
@@ -2447,31 +2525,55 @@
     return new Promise(resolve => { boxedNumberResolver = resolve; });
   }
   function csvCell(value) { return `"${String(value ?? '').replace(/"/g, '""')}"`; }
+  const inspectionComment = value => String(value || '').replace(/損傷\s*[0-9０-９]+(?:\s*[,，、・]\s*[0-9０-９]+)*/g, '損傷〇〇');
   function damageListRows() {
-    const grouped = new Map();
+    const rows = [];
+    let drawingSequence = 0;
     for (const [elementPage, drawings] of state.annotations) {
       for (const drawing of drawings) {
         const info = drawing.damageInfo;
         if (!info) continue;
+        drawingSequence++;
+        drawing.drawingId ||= String(drawingSequence).padStart(3, '0');
+        drawing.inspectionPhotos ||= [];
+        while (drawing.inspectionPhotos.length < 4) drawing.inspectionPhotos.push({ number: '', memo: '' });
         const records = info.records?.length ? info.records : [{}];
         for (const record of records) {
-          const row = {
+          rows.push({
+            drawingId: drawing.drawingId,
             elementPage, damageNumber: info.damageNumber || record.damageNumber || '',
-            spanNumber: record.spanNumber || '', photoNumber: record.photoNumber || '',
+            spanNumber: record.spanNumber || '',
             memberName: record.memberName || '', memberSymbol: record.memberSymbol || '', memberNumber: record.memberNumber || '',
-            damageType: record.damageType || '', damageLevel: record.damageLevel || '',
-            memo: record.memo || '', photoPage: record.pageNumber || '', drawingCount: 0
-          };
-          const key = [row.elementPage, row.spanNumber, row.damageNumber, row.photoNumber, row.memberName, row.memberSymbol, row.memberNumber, row.damageType].join('|');
-          const current = grouped.get(key) || row;
-          current.drawingCount++;
-          grouped.set(key, current);
+            damageType: record.damageType || '', damagePattern: record.damagePattern || '', classification: record.classification || '',
+            damageLevel: record.damageLevel || '', diagnosis: record.diagnosis || '', memo: inspectionComment(record.memo),
+            photos: drawing.inspectionPhotos, drawing, record, info
+          });
         }
       }
     }
-    return [...grouped.values()].sort((a, b) =>
+    return rows.sort((a, b) =>
       String(a.spanNumber).localeCompare(String(b.spanNumber), 'ja', { numeric: true }) ||
-      Number(a.damageNumber) - Number(b.damageNumber) || Number(a.photoNumber) - Number(b.photoNumber));
+      Number(a.damageNumber) - Number(b.damageNumber) || String(a.drawingId).localeCompare(String(b.drawingId), 'ja', { numeric: true }));
+  }
+  function updateInspectionResultCell(row, field, entered, photoIndex = null, photoField = '') {
+    const value = field === 'memo' ? inspectionComment(entered) : entered.trim();
+    if (photoIndex !== null) row.photos[photoIndex][photoField] = value;
+    else if (field === 'damageNumber') { row.info.damageNumber = value; row.record.damageNumber = value; }
+    else { row.record[field] = value; }
+    $('globalStatus').textContent = '点検結果を修正しました';
+  }
+  function makeResultCellEditable(td, save) {
+    td.classList.add('editableResultCell'); td.contentEditable = 'plaintext-only'; td.spellcheck = false; td.title = 'タップして修正';
+    td.addEventListener('click', event => event.stopPropagation());
+    td.addEventListener('input', () => fitInspectionResultCell(td));
+    td.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); td.blur(); } });
+    td.addEventListener('blur', () => save(cleanField(td.textContent)));
+  }
+  function fitInspectionResultCell(td) {
+    if (td.querySelector('input')) return;
+    td.style.fontSize = '11px';
+    for (let size = 10; td.scrollWidth > td.clientWidth && size >= 7; size--) td.style.fontSize = `${size}px`;
+    td.title = cleanField(td.textContent) || 'タップして修正';
   }
   function renderDamageList() {
     const rows = damageListRows();
@@ -2479,13 +2581,36 @@
     const body = $('damageListBody'); body.replaceChildren();
     if (!rows.length) {
       const tr = document.createElement('tr');
-      tr.innerHTML = '<td colspan="10" class="damageListEmpty">損傷番号をタップしてから作図すると、ここに追加されます</td>';
+      tr.innerHTML = '<td colspan="20" class="damageListEmpty">損傷番号をタップしてから作図すると、ここに追加されます</td>';
       body.appendChild(tr); return;
     }
     for (const row of rows) {
       const tr = document.createElement('tr');
-      const values = [row.spanNumber, row.damageNumber, row.photoNumber, row.memberName, row.memberSymbol, row.memberNumber, row.damageType, row.damageLevel, row.memo, row.drawingCount];
-      for (const value of values) { const td = document.createElement('td'); td.textContent = value; tr.appendChild(td); }
+      const fields = ['drawingId', 'damageNumber', 'spanNumber', 'memberName', 'memberSymbol', 'memberNumber', 'damageType', 'damagePattern', 'classification', 'damageLevel', 'diagnosis', 'memo'];
+      for (const field of fields) {
+        const td = document.createElement('td'); td.textContent = row[field] || '';
+        if (field !== 'drawingId') makeResultCellEditable(td, value => updateInspectionResultCell(row, field, value));
+        tr.appendChild(td);
+      }
+      row.photos.slice(0, 4).forEach((photo, photoIndex) => {
+        for (const photoField of ['number', 'memo']) {
+          const td = document.createElement('td');
+          if (photoField === 'number') {
+            const input = document.createElement('input');
+            input.className = 'inspectionPhotoNumberInput'; input.type = 'text'; input.inputMode = 'numeric';
+            input.pattern = '[0-9]*'; input.value = photo.number || ''; input.placeholder = '番号';
+            input.addEventListener('click', event => event.stopPropagation());
+            input.addEventListener('input', () => { input.value = normalizeDigits(input.value).replace(/[^0-9]/g, ''); });
+            input.addEventListener('change', () => updateInspectionResultCell(row, '', input.value, photoIndex, 'number'));
+            input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); input.blur(); } });
+            td.appendChild(input);
+          } else {
+            td.textContent = photo.memo || '';
+            makeResultCellEditable(td, value => updateInspectionResultCell(row, '', value, photoIndex, 'memo'));
+          }
+          tr.appendChild(td);
+        }
+      });
       tr.addEventListener('click', async () => {
         state.element.page = row.elementPage;
         await renderSide('element');
@@ -2493,6 +2618,7 @@
       });
       body.appendChild(tr);
     }
+    requestAnimationFrame(() => body.querySelectorAll('td').forEach(fitInspectionResultCell));
   }
   function placeDamageListInViewer(reset = false) {
     const pane = $('damageListPane'), viewer = $('elementViewer');
@@ -2507,22 +2633,30 @@
       pane.style.top = `${Math.max(area.top, Math.min(parseFloat(pane.style.top) || area.top + 8, area.bottom - pane.offsetHeight))}px`;
     }
   }
+  const refitAfterTopPanelChange = () => requestAnimationFrame(async () => {
+    await renderElementPreservingView();
+    if (!$('photoPane').classList.contains('hiddenPanel')) placePhotoPaneInViewer(false);
+  });
   function showDamageList() {
-    renderDamageList(); $('damageListPane').classList.remove('hiddenPanel');
-    requestAnimationFrame(() => placeDamageListInViewer(true));
+    renderDamageList();
+    const pane = $('damageListPane'); pane.classList.add('topDocked'); pane.classList.remove('hiddenPanel');
+    pane.style.removeProperty('left'); pane.style.removeProperty('top'); pane.style.removeProperty('width');
+    refitAfterTopPanelChange();
   }
-  function hideDamageList() { $('damageListPane').classList.add('hiddenPanel'); }
+  function hideDamageList() { $('damageListPane').classList.add('hiddenPanel'); refitAfterTopPanelChange(); }
   function exportDrawingCsv() {
-    const header = ['要素図ページ','径間番号','損傷番号','写真番号','部材名','記号','部材番号（要素番号）','損傷の種類','損傷程度','メモ','写真PDFページ','作図数'];
+    const header = ['作図ID','損傷ID','径間番号','部材名称','記号','要素番号','損傷の種類','損傷パターン','分類','損傷程度の評価','健全性の診断結果','コメント','写真1番号','写真1メモ','写真2番号','写真2メモ','写真3番号','写真3メモ','写真4番号','写真4メモ'];
     const rows = [header];
     for (const row of damageListRows()) rows.push([
-      row.elementPage, row.spanNumber, row.damageNumber, row.photoNumber, row.memberName, row.memberSymbol,
-      row.memberNumber, row.damageType, row.damageLevel, row.memo, row.photoPage, row.drawingCount
+      row.drawingId, row.damageNumber, row.spanNumber, row.memberName, row.memberSymbol, row.memberNumber,
+      row.damageType, row.damagePattern, row.classification, row.damageLevel, row.diagnosis, row.memo,
+      row.photos[0].number, row.photos[0].memo, row.photos[1].number, row.photos[1].memo,
+      row.photos[2].number, row.photos[2].memo, row.photos[3].number, row.photos[3].memo
     ]);
     if (rows.length === 1) { $('globalStatus').textContent = '損傷情報を付与した作図がありません'; return; }
     const csv = '\uFEFF' + rows.map(row => row.map(csvCell).join(',')).join('\r\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-    const link = document.createElement('a'); link.href = url; link.download = '点検作図情報.csv'; link.click();
+    const link = document.createElement('a'); link.href = url; link.download = '点検結果一覧表.csv'; link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     $('globalStatus').textContent = '作図に付与した損傷情報をCSV保存しました';
   }
@@ -2603,7 +2737,7 @@
   });
   let damageListDrag = null;
   $('damageListPane').querySelector('.damageListHeader').addEventListener('pointerdown', event => {
-    if (event.target.closest('button')) return;
+    if (event.target.closest('button') || $('damageListPane').classList.contains('topDocked')) return;
     const pane = $('damageListPane'); const rect = pane.getBoundingClientRect();
     damageListDrag = { x: event.clientX, y: event.clientY, left: rect.left, top: rect.top };
     event.currentTarget.setPointerCapture(event.pointerId); event.preventDefault();
@@ -2627,19 +2761,44 @@
   $('damageListResize').addEventListener('pointermove', event => {
     if (!damageListResize) return;
     const pane = $('damageListPane'), area = $('elementViewer').getBoundingClientRect();
+    if (pane.classList.contains('topDocked')) {
+      pane.style.height = `${Math.max(72, Math.min(innerHeight * .45, damageListResize.height + event.clientY - damageListResize.y))}px`;
+      pane.style.flexBasis = pane.style.height;
+      event.preventDefault(); return;
+    }
     pane.style.width = `${Math.max(280, Math.min(area.right - pane.offsetLeft, damageListResize.width + event.clientX - damageListResize.x))}px`;
     pane.style.height = `${Math.max(150, Math.min(area.bottom - pane.offsetTop, damageListResize.height + event.clientY - damageListResize.y))}px`;
     event.preventDefault();
   });
-  const finishDamageListResize = () => { damageListResize = null; };
+  const finishDamageListResize = () => { if (damageListResize) refitAfterTopPanelChange(); damageListResize = null; };
   $('damageListResize').addEventListener('pointerup', finishDamageListResize);
   $('damageListResize').addEventListener('pointercancel', finishDamageListResize);
   window.addEventListener('resize', () => {
-    if (!$('damageListPane').classList.contains('hiddenPanel')) placeDamageListInViewer(false);
+    if (!$('damageListPane').classList.contains('hiddenPanel') && !$('damageListPane').classList.contains('topDocked')) placeDamageListInViewer(false);
     if (!$('photoPane').classList.contains('hiddenPanel')) placePhotoPaneInViewer(false);
   });
-  $('showAssessmentList').addEventListener('click', () => { renderAssessmentList(); $('assessmentListPane').classList.remove('hiddenPanel'); });
-  $('assessmentListClose').addEventListener('click', () => $('assessmentListPane').classList.add('hiddenPanel'));
+  const mainWorkArea = document.querySelector('main');
+  document.body.insertBefore($('assessmentListPane'), mainWorkArea);
+  document.body.insertBefore($('damageListPane'), mainWorkArea);
+  $('assessmentListPane').classList.add('topDocked');
+  $('damageListPane').classList.add('topDocked');
+  const bindTopPanelHeight = (pane, handle) => {
+    let resize = null;
+    handle.addEventListener('pointerdown', event => {
+      const rect = pane.getBoundingClientRect(); resize = { y: event.clientY, height: rect.height, pointerId: event.pointerId };
+      handle.setPointerCapture(event.pointerId); event.preventDefault(); event.stopPropagation();
+    });
+    handle.addEventListener('pointermove', event => {
+      if (!resize || event.pointerId !== resize.pointerId) return;
+      const height = Math.max(72, Math.min(innerHeight * .45, resize.height + event.clientY - resize.y));
+      pane.style.height = `${height}px`; pane.style.flexBasis = `${height}px`; event.preventDefault();
+    });
+    const finish = event => { if (resize && event.pointerId === resize.pointerId) { resize = null; refitAfterTopPanelChange(); } };
+    handle.addEventListener('pointerup', finish); handle.addEventListener('pointercancel', finish);
+  };
+  bindTopPanelHeight($('assessmentListPane'), $('assessmentListResize'));
+  $('showAssessmentList').addEventListener('click', () => { renderAssessmentList(); $('assessmentListPane').classList.remove('hiddenPanel'); refitAfterTopPanelChange(); });
+  $('assessmentListClose').addEventListener('click', () => { $('assessmentListPane').classList.add('hiddenPanel'); refitAfterTopPanelChange(); });
   $('drawingInfoClose').addEventListener('click', closeDrawingRegistration);
   $('drawingInfoNone').addEventListener('click', () => {
     if (pendingDrawingRegistration) pendingDrawingRegistration.damageInfo = null;
@@ -2696,9 +2855,7 @@
     state.photo.page = state.photo.matches[0].page;
     state.photo.focus = state.photo.pageOverview ? null : state.photo.matches[0].focus;
     event.currentTarget.textContent = state.photo.pageOverview ? '該当写真へ戻る' : 'ページ全体';
-    $('matchStatus').textContent = state.photo.pageOverview
-      ? `損傷${String(state.currentDamage?.damageNumber || '').padStart(2, '0')}を含むPDF ${new Set(state.photo.matches.map(match => match.page)).size}ページを縦並び`
-      : `損傷${String(state.currentDamage?.damageNumber || '').padStart(2, '0')}：${state.photo.matches.length}件`;
+    $('matchStatus').textContent = '';
     await renderSide('photo');
   });
   $('photoMaximize').addEventListener('click', async event => {
