@@ -7,12 +7,24 @@
     standardFontDataUrl: '../pdfjs/standard_fonts/'
   };
   const $ = (id) => document.getElementById(id);
+  // Field drawings need to remain unobtrusive over dense PDF annotations.
+  // The previous 18px text default is now exactly 25% (4.5px), and the
+  // previous thin line becomes the new standard with an extra-fine option.
+  $('drawFontSize').innerHTML = '<option value="3">極小</option><option value="4.5" selected>標準</option><option value="9">大</option><option value="18">特大</option>';
+  $('drawWidth').innerHTML = '<option value="0.75">極細</option><option value="1.5" selected>標準</option><option value="3">太</option><option value="5">極太</option>';
+  const MIN_PDF_ZOOM = .25, MAX_PDF_ZOOM = 20;
+  const safeRenderDpr = (width, height, scale) => Math.max(.35, Math.min(
+    window.devicePixelRatio || 1,
+    2.5,
+    12000 / Math.max(width, height) / scale,
+    Math.sqrt(64000000 / Math.max(1, width * height * scale * scale))
+  ));
   const state = {
     element: { doc: null, page: 1, viewer: $('elementViewer'), label: $('elementPage'), zoom: 1, focus: null },
     photo: { doc: null, page: 1, viewer: $('photoViewer'), label: $('photoPage'), zoom: 1, focus: null, matches: null, pageOverview: false, fitPaneAfterRender: false, dockMode: 'free' },
     photoIndex: new Map(), damageNumberDigits: 2, assessmentIndex: new Map(), assessmentRows: [], assessmentDoc: null, currentDamage: null, renderToken: { element: 0, photo: 0 },
     ocrWorker: null, ocrHotspots: new Map(), textDamageNumbers: new Map(), elementSpanNumbers: new Map(), ocrJobs: new Map(), ocrProgress: null, missingDamageNumbers: [], missingPhotoNumbers: [], ignoredMissing: new Set(), manualHotspots: new Map(), hotspotOverrides: new Map(), pendingManualDamage: null,
-    drawMode: 'select', drawingSide: 'element', pendingImage: '', annotations: new Map(), photoAnnotations: new Map(), activePhotoAnnotationKey: null, hotspotEditMode: false, editingHotspot: null
+    drawMode: 'select', previousDrawMode: 'free', drawingSide: 'element', pendingImage: '', annotations: new Map(), photoAnnotations: new Map(), activePhotoAnnotationKey: null, selectedAnnotation: null, annotationCopyArmed: false, hotspotEditMode: false, editingHotspot: null
   };
   const cleanField = value => String(value || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
   function fieldRightOf(items, pattern) {
@@ -371,7 +383,7 @@
     const cssScale = (side === 'photo' && target.pageOverview
       ? Math.min(available / crop.width, availableHeight / crop.height)
       : available / crop.width) * target.zoom;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    const dpr = safeRenderDpr(crop.width, crop.height, cssScale);
     const viewport = page.getViewport({ scale: cssScale * dpr });
     const wrap = document.createElement('div');
     wrap.className = 'pageWrap';
@@ -405,6 +417,29 @@
           console.warn('damage hotspot detection failed', error);
         });
       } else addDrawingLayer(wrap, `page:${target.page}`, 'photo');
+  }
+  function captureElementView() {
+    const viewer = $('elementViewer');
+    const oldWrap = viewer.querySelector('.pageWrap');
+    return oldWrap ? {
+      page: state.element.page,
+      x: (viewer.scrollLeft + viewer.clientWidth / 2 - oldWrap.offsetLeft) / Math.max(1, oldWrap.offsetWidth),
+      y: (viewer.scrollTop + viewer.clientHeight / 2 - oldWrap.offsetTop) / Math.max(1, oldWrap.offsetHeight)
+    } : null;
+  }
+  async function restoreElementView(anchor) {
+    if (!anchor || anchor.page !== state.element.page) return;
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const viewer = $('elementViewer');
+    const newWrap = viewer.querySelector('.pageWrap');
+    if (!newWrap) return;
+    viewer.scrollLeft = Math.max(0, newWrap.offsetLeft + newWrap.offsetWidth * anchor.x - viewer.clientWidth / 2);
+    viewer.scrollTop = Math.max(0, newWrap.offsetTop + newWrap.offsetHeight * anchor.y - viewer.clientHeight / 2);
+  }
+  async function renderElementPreservingView() {
+    const anchor = captureElementView();
+    await renderSide('element');
+    await restoreElementView(anchor);
   }
   function photoRecordCrop(base, focus) {
     // The upper record begins below the page-level bridge information table;
@@ -447,7 +482,6 @@
     // must change only the vertical window length.
     const horizontal = false;
     const available = Math.max(120, ($('photoPane').clientWidth - 20 - (horizontal ? 6 * (target.matches.length - 1) : 0)) / (horizontal ? target.matches.length : 1));
-    const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
     const fragment = document.createDocumentFragment();
     const referencePage = await target.doc.getPage(target.matches[0].page);
     const referenceBase = referencePage.getViewport({ scale: 1 });
@@ -456,6 +490,7 @@
     // that scale because the pane is currently short; its height is fitted to
     // the number of stacked records after rendering.
     const commonScale = available / referenceCropWidth * target.zoom;
+    const dpr = safeRenderDpr(referenceCropWidth, referenceBase.height * .315, commonScale);
     for (const match of target.matches) {
       const page = await target.doc.getPage(match.page);
       const base = page.getViewport({ scale: 1 });
@@ -489,6 +524,7 @@
     target.viewer.replaceChildren(fragment);
     target.label.textContent = `${target.matches.length}件`;
     $('photoZoomLabel').textContent = `${Math.round(target.zoom * 100)}%`;
+    restoreVisibleAnnotationSelection('photo');
     target.keepPaneHeight = false;
     fitPhotoPaneHeightToMatches();
   }
@@ -522,7 +558,7 @@
     const widest = Math.max(...bases.map(base => base.width));
     const totalHeight = bases.reduce((sum, base) => sum + base.height, 0);
     const commonScale = Math.min(availableWidth / widest, availableHeight / totalHeight) * target.zoom;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    const dpr = safeRenderDpr(widest, Math.max(...bases.map(base => base.height)), commonScale);
     const fragment = document.createDocumentFragment();
     for (let index = 0; index < pages.length; index++) {
       const page = pages[index], base = bases[index], factor = commonScale * dpr;
@@ -540,18 +576,145 @@
     target.viewer.replaceChildren(fragment);
     target.label.textContent = `${pageNumbers.length}ページ`;
     $('photoZoomLabel').textContent = `${Math.round(target.zoom * 100)}%`;
+    restoreVisibleAnnotationSelection('photo');
   }
   function annotationList(pageNumber, side = 'element') {
     const store = side === 'photo' ? state.photoAnnotations : state.annotations;
     if (!store.has(pageNumber)) store.set(pageNumber, []);
     return store.get(pageNumber);
   }
+  const annotationId = () => globalThis.crypto?.randomUUID?.() || `a${Date.now()}${Math.random().toString(16).slice(2)}`;
+  function annotationCenter(item) {
+    const points = item.points?.length ? item.points : [
+      { x: item.x1 || 0, y: item.y1 || 0 },
+      { x: Number.isFinite(item.x2) ? item.x2 : item.x1 || 0, y: Number.isFinite(item.y2) ? item.y2 : item.y1 || 0 }
+    ];
+    return { x: points.reduce((sum, p) => sum + p.x, 0) / points.length, y: points.reduce((sum, p) => sum + p.y, 0) / points.length };
+  }
+  function translateAnnotation(item, dx, dy) {
+    for (const suffix of ['1', '2', '3']) {
+      if (Number.isFinite(item[`x${suffix}`])) item[`x${suffix}`] += dx;
+      if (Number.isFinite(item[`y${suffix}`])) item[`y${suffix}`] += dy;
+    }
+    if (item.points) item.points = item.points.map(point => ({ x: point.x + dx, y: point.y + dy }));
+  }
+  function transformAnnotation(item, anchor, scaleX, scaleY, dx = 0, dy = 0) {
+    for (const suffix of ['1', '2', '3']) {
+      const xKey = `x${suffix}`, yKey = `y${suffix}`;
+      if (Number.isFinite(item[xKey])) item[xKey] = anchor.x + (item[xKey] - anchor.x) * scaleX + dx;
+      if (Number.isFinite(item[yKey])) item[yKey] = anchor.y + (item[yKey] - anchor.y) * scaleY + dy;
+    }
+    if (item.points) item.points = item.points.map(point => ({ x: anchor.x + (point.x - anchor.x) * scaleX + dx, y: anchor.y + (point.y - anchor.y) * scaleY + dy }));
+    const sizeFactor = Math.sqrt(Math.max(.0025, Math.abs(scaleX * scaleY)));
+    if (item.type === 'text' || item.type === 'boxedNumber' || item.type === 'leader') item.fontSize = Math.max(3, Math.min(96, (item.fontSize || 18) * sizeFactor));
+    item.width = Math.max(.5, Math.min(20, (item.width || 3) * sizeFactor));
+  }
+  function scaleAnnotations(items, factor) {
+    const centers = items.map(annotationCenter);
+    const center = { x: centers.reduce((sum, p) => sum + p.x, 0) / centers.length, y: centers.reduce((sum, p) => sum + p.y, 0) / centers.length };
+    for (const item of items) {
+      for (const suffix of ['1', '2', '3']) {
+        if (Number.isFinite(item[`x${suffix}`])) item[`x${suffix}`] = center.x + (item[`x${suffix}`] - center.x) * factor;
+        if (Number.isFinite(item[`y${suffix}`])) item[`y${suffix}`] = center.y + (item[`y${suffix}`] - center.y) * factor;
+      }
+      if (item.points) item.points = item.points.map(point => ({ x: center.x + (point.x - center.x) * factor, y: center.y + (point.y - center.y) * factor }));
+      if (item.type === 'text' || item.type === 'boxedNumber' || item.type === 'leader') item.fontSize = Math.max(8, Math.min(96, (item.fontSize || 18) * factor));
+      item.width = Math.max(.75, Math.min(20, (item.width || 3) * factor));
+    }
+  }
+  function removeMirroredPhotoAnnotation(key, id) {
+    const match = String(key).match(/^record:(\d+):/); if (!match) return;
+    const overview = annotationList(`overview:${match[1]}`, 'photo');
+    for (let index = overview.length - 1; index >= 0; index--) {
+      if (overview[index].sourceAnnotationId === id) overview.splice(index, 1);
+    }
+  }
+  function showAnnotationMiniMenu(event, side, key, index, node, selections = null) {
+    document.querySelectorAll('.selectedAnnotation').forEach(item => item.classList.remove('selectedAnnotation'));
+    state.selectedAnnotation = { side, key, index, wrap: node.closest('.pageWrap'), selections: selections || [{ side, key, index, wrap: node.closest('.pageWrap') }] };
+    const svg = node.ownerSVGElement;
+    const selectedNodes = state.selectedAnnotation.selections.map(selection => svg.querySelector(`[data-annotation-index="${selection.index}"]`)).filter(Boolean);
+    selectedNodes.forEach(item => item.classList.add('selectedAnnotation'));
+    addSelectionControls(svg, selectedNodes, state.selectedAnnotation.selections);
+    state.annotationCopyArmed = false;
+    const menu = $('annotationMiniMenu'); menu.classList.remove('hiddenPanel');
+    $('annotationSelectionCount').textContent = `${state.selectedAnnotation.selections.length}個`;
+    const width = 300, height = 42;
+    menu.style.left = `${Math.max(4, Math.min(innerWidth - width - 4, event.clientX + 32))}px`;
+    menu.style.top = `${Math.max(4, Math.min(innerHeight - height - 4, event.clientY + 36))}px`;
+  }
+  function addSelectionControls(svg, selectedNodes, selections) {
+    svg.querySelector('.selectionControls')?.remove();
+    if (!selectedNodes.length) return;
+    const boxes = selectedNodes.map(node => node.getBBox()), padding = 8;
+    const bounds = { left: Math.min(...boxes.map(box => box.x)) - padding, top: Math.min(...boxes.map(box => box.y)) - padding, right: Math.max(...boxes.map(box => box.x + box.width)) + padding, bottom: Math.max(...boxes.map(box => box.y + box.height)) + padding };
+    bounds.width = Math.max(1, bounds.right - bounds.left); bounds.height = Math.max(1, bounds.bottom - bounds.top);
+    const controls = svgNode('g'); controls.classList.add('selectionControls');
+    const box = svgNode('rect', { x: bounds.left, y: bounds.top, width: bounds.width, height: bounds.height, class: 'selectionBox' }); controls.appendChild(box);
+    const positions = { nw: [bounds.left, bounds.top], n: [(bounds.left + bounds.right) / 2, bounds.top], ne: [bounds.right, bounds.top], e: [bounds.right, (bounds.top + bounds.bottom) / 2], se: [bounds.right, bounds.bottom], s: [(bounds.left + bounds.right) / 2, bounds.bottom], sw: [bounds.left, bounds.bottom], w: [bounds.left, (bounds.top + bounds.bottom) / 2] };
+    for (const [handle, [x, y]] of Object.entries(positions)) controls.appendChild(svgNode('circle', { cx: x, cy: y, r: 3.5, class: 'selectionHandle', 'data-handle': handle }));
+    svg.appendChild(controls);
+    const svgPoint = event => { const rect = svg.getBoundingClientRect(); return { x: (event.clientX - rect.left) / rect.width * 1000, y: (event.clientY - rect.top) / rect.height * 1000 }; };
+    const beginTransform = event => {
+      event.preventDefault(); event.stopPropagation();
+      const handle = event.target.dataset.handle || 'move', start = svgPoint(event);
+      const originals = selections.map(selection => { const item = annotationList(selection.key, selection.side)[selection.index]; return item ? JSON.parse(JSON.stringify(item)) : null; });
+      const pointerId = event.pointerId; controls.setPointerCapture(pointerId);
+      let current = { anchor: { x: 0, y: 0 }, sx: 1, sy: 1, dx: 0, dy: 0 };
+      const calculate = pointer => {
+        if (handle === 'move') return { anchor: { x: 0, y: 0 }, sx: 1, sy: 1, dx: pointer.x - start.x, dy: pointer.y - start.y };
+        const west = handle.includes('w'), east = handle.includes('e'), north = handle.includes('n'), south = handle.includes('s');
+        const anchor = { x: west ? bounds.right : bounds.left, y: north ? bounds.bottom : bounds.top }; let sx = 1, sy = 1;
+        if (west) sx = Math.max(.05, (bounds.right - Math.min(pointer.x, bounds.right - 12)) / bounds.width);
+        if (east) sx = Math.max(.05, (Math.max(pointer.x, bounds.left + 12) - bounds.left) / bounds.width);
+        if (north) sy = Math.max(.05, (bounds.bottom - Math.min(pointer.y, bounds.bottom - 12)) / bounds.height);
+        if (south) sy = Math.max(.05, (Math.max(pointer.y, bounds.top + 12) - bounds.top) / bounds.height);
+        return { anchor, sx, sy, dx: 0, dy: 0 };
+      };
+      const transformText = value => `translate(${value.dx} ${value.dy}) translate(${value.anchor.x} ${value.anchor.y}) scale(${value.sx} ${value.sy}) translate(${-value.anchor.x} ${-value.anchor.y})`;
+      const move = moveEvent => { if (moveEvent.pointerId !== pointerId) return; current = calculate(svgPoint(moveEvent)); selectedNodes.forEach(item => item.setAttribute('transform', transformText(current))); controls.setAttribute('transform', transformText(current)); moveEvent.preventDefault(); };
+      const finish = upEvent => {
+        if (upEvent.pointerId !== pointerId) return;
+        controls.removeEventListener('pointermove', move); controls.removeEventListener('pointerup', finish); controls.removeEventListener('pointercancel', finish);
+        selections.forEach((selection, selectionIndex) => {
+          const item = annotationList(selection.key, selection.side)[selection.index], original = originals[selectionIndex]; if (!item || !original) return;
+          removeMirroredPhotoAnnotation(selection.key, item.id); Object.keys(item).forEach(key => delete item[key]); Object.assign(item, original);
+          transformAnnotation(item, current.anchor, current.sx, current.sy, current.dx, current.dy);
+          if (selection.side === 'photo') mirrorPhotoRecordAnnotation(selection.wrap, selection.key, item);
+        });
+        $('annotationMiniMenu').classList.add('hiddenPanel'); state.selectedAnnotation = null; renderSide(selections[0].side);
+        if (selections[0].side === 'element' && !$('damageListPane').classList.contains('hiddenPanel')) renderDamageList();
+        $('globalStatus').textContent = `${selections.length}個の作図を${handle === 'move' ? '移動' : 'サイズ変更'}しました`;
+        upEvent.preventDefault(); upEvent.stopPropagation();
+      };
+      controls.addEventListener('pointermove', move); controls.addEventListener('pointerup', finish); controls.addEventListener('pointercancel', finish);
+    };
+    box.addEventListener('pointerdown', beginTransform); controls.querySelectorAll('.selectionHandle').forEach(handle => handle.addEventListener('pointerdown', beginTransform));
+  }
+  function restoreVisibleAnnotationSelection(side) {
+    const selected = state.selectedAnnotation;
+    if (!selected || state.annotationCopyArmed || selected.side !== side) return;
+    requestAnimationFrame(() => {
+      if (state.selectedAnnotation !== selected) return;
+      const allSelections = selected.selections || [selected];
+      const svg = [...state[side].viewer.querySelectorAll('.annotationLayer')].find(layer =>
+        layer.dataset.annotationSide === side && allSelections.some(selection => String(selection.key) === layer.dataset.annotationKey));
+      if (!svg) return;
+      const matching = allSelections.filter(selection => String(selection.key) === svg.dataset.annotationKey);
+      const restored = matching.map(selection => ({ ...selection, wrap: svg.closest('.pageWrap') }));
+      const nodes = restored.map(selection => svg.querySelector(`[data-annotation-index="${selection.index}"]`)).filter(Boolean);
+      if (!nodes.length) return;
+      selected.wrap = svg.closest('.pageWrap'); selected.selections = restored;
+      nodes.forEach(node => node.classList.add('selectedAnnotation'));
+      addSelectionControls(svg, nodes, restored);
+    });
+  }
   function mirrorPhotoRecordAnnotation(wrap, key, item) {
     if (!String(key).startsWith('record:') || !wrap.dataset.photoPage) return;
     const x = Number(wrap.dataset.photoViewX), y = Number(wrap.dataset.photoViewY);
     const width = Number(wrap.dataset.photoViewWidth), height = Number(wrap.dataset.photoViewHeight);
     if (![x, y, width, height].every(Number.isFinite)) return;
-    const copy = { ...item, sourceRecordKey: key };
+    const copy = { ...item, id: annotationId(), sourceRecordKey: key, sourceAnnotationId: item.id };
     const mapPoint = point => ({ x: x + point.x / 1000 * width, y: y + point.y / 1000 * height });
     for (const suffix of ['1', '2', '3']) {
       if (Number.isFinite(item[`x${suffix}`])) copy[`x${suffix}`] = x + item[`x${suffix}`] / 1000 * width;
@@ -612,29 +775,82 @@
   function addDrawingLayer(wrap, pageNumber, side = 'element') {
     const svg = svgNode('svg', { viewBox: '0 0 1000 1000', preserveAspectRatio: 'none' });
     svg.classList.add('annotationLayer');
-    if (state.drawMode !== 'select' && state.drawingSide === side) svg.classList.add('drawing');
+    svg.dataset.annotationKey = String(pageNumber); svg.dataset.annotationSide = side;
+    if (!['select', 'pan'].includes(state.drawMode) && state.drawingSide === side) svg.classList.add('drawing');
+    if (state.drawMode === 'select' && state.drawingSide === side && !$('commonDrawTools').classList.contains('hiddenPanel')) svg.classList.add('selecting');
     const defs = svgNode('defs');
     const marker = svgNode('marker', { id: 'inspectionArrow', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, orient: 'auto-start-reverse' });
     marker.appendChild(svgNode('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'context-stroke', stroke: 'none' }));
     defs.appendChild(marker); svg.appendChild(defs);
-    for (const item of annotationList(pageNumber, side)) drawAnnotation(svg, item);
+    annotationList(pageNumber, side).forEach((item, index) => {
+      // Photo-number callouts need to remain legible over full-resolution
+      // inspection photographs. Apply this once to existing saved drawings as
+      // well as newly-created ones, without changing ordinary text or the
+      // element-diagram side.
+      if (side === 'photo' && item.type === 'boxedNumber' && !item.photoNumberTripleSize) {
+        item.fontSize = Math.min(96, (item.fontSize || Number($('drawFontSize').value) || 4.5) * 3);
+        item.photoNumberTripleSize = true;
+      }
+      item.id ||= annotationId();
+      const node = drawAnnotation(svg, item);
+      node.classList.add('selectableAnnotation');
+      node.dataset.annotationIndex = String(index);
+      node.addEventListener('click', event => {
+        if (state.drawMode !== 'select' || state.drawingSide !== side) return;
+        event.stopPropagation(); showAnnotationMiniMenu(event, side, pageNumber, index, node);
+      });
+    });
     let start = null;
     let preview = null;
     let freePoints = null;
+    let rangeSelecting = false;
     const drawingStyle = () => ({ color: $('drawColor').value, width: Number($('drawWidth').value), fontSize: Number($('drawFontSize').value), dash: $('drawDash').value });
     const point = event => {
       const rect = svg.getBoundingClientRect();
       return { x: (event.clientX - rect.left) / rect.width * 1000, y: (event.clientY - rect.top) / rect.height * 1000 };
     };
     svg.addEventListener('pointerdown', async event => {
-      if (state.drawMode === 'select' || state.drawingSide !== side) return;
+      if (state.drawMode === 'select') {
+        const selected = state.selectedAnnotation;
+        if (state.annotationCopyArmed && selected?.side === side) {
+          const selections = selected.selections || [selected];
+          const sourceItems = selections.map(selection => annotationList(selection.key, selection.side)[selection.index]).filter(Boolean);
+          if (sourceItems.length) {
+            const destination = point(event);
+            const centers = sourceItems.map(annotationCenter);
+            const center = { x: centers.reduce((sum, p) => sum + p.x, 0) / centers.length, y: centers.reduce((sum, p) => sum + p.y, 0) / centers.length };
+            const targetItems = annotationList(pageNumber, side);
+            for (const source of sourceItems) {
+              const copy = JSON.parse(JSON.stringify(source)); copy.id = annotationId();
+              translateAnnotation(copy, destination.x - center.x, destination.y - center.y);
+              targetItems.push(copy);
+              if (side === 'photo') mirrorPhotoRecordAnnotation(wrap, pageNumber, copy);
+            }
+            state.annotationCopyArmed = false; state.selectedAnnotation = null;
+            $('annotationMiniMenu').classList.add('hiddenPanel'); renderSide(side);
+            $('globalStatus').textContent = `${sourceItems.length}個の作図を指定位置へコピーしました`;
+            event.preventDefault();
+          }
+        } else if (!event.target.closest('.selectableAnnotation') && state.drawingSide === side) {
+          start = point(event); rangeSelecting = true;
+          preview = svgNode('rect', { x: start.x, y: start.y, width: 0, height: 0 });
+          preview.classList.add('selectionMarquee'); svg.appendChild(preview);
+          svg.setPointerCapture(event.pointerId); event.preventDefault();
+        }
+        return;
+      }
+      if (state.drawingSide !== side) return;
       if (side === 'photo') state.activePhotoAnnotationKey = pageNumber;
       const p = point(event);
       if (state.drawMode === 'boxedNumber') {
         event.preventDefault();
         const value = await requestBoxedNumber();
         if (value) {
-          const item = { type: 'boxedNumber', x1: p.x, y1: p.y, text: value, ...drawingStyle(), damageInfo: annotationMetadata() };
+          const style = drawingStyle();
+          // On photographs, commit the 300% font size at creation time. This
+          // avoids depending on a later redraw to enlarge the number.
+          if (side === 'photo') style.fontSize *= 3;
+          const item = { id: annotationId(), type: 'boxedNumber', x1: p.x, y1: p.y, text: value, ...style, photoNumberTripleSize: side === 'photo', damageInfo: annotationMetadata() };
           annotationList(pageNumber, side).push(item);
           if (side === 'photo') mirrorPhotoRecordAnnotation(wrap, pageNumber, item);
           renderSide(side);
@@ -646,7 +862,7 @@
       if (state.drawMode === 'text') {
         const value = prompt('文字を入力してください', '');
         if (value) {
-          const item = { type: 'text', x1: p.x, y1: p.y, text: value, ...drawingStyle(), damageInfo: annotationMetadata() };
+          const item = { id: annotationId(), type: 'text', x1: p.x, y1: p.y, text: value, ...drawingStyle(), damageInfo: annotationMetadata() };
           annotationList(pageNumber, side).push(item);
           if (side === 'photo') mirrorPhotoRecordAnnotation(wrap, pageNumber, item);
           renderSide(side);
@@ -665,7 +881,10 @@
     svg.addEventListener('pointermove', event => {
       if (!start || !preview) return;
       const p = point(event);
-      if (state.drawMode === 'free') {
+      if (rangeSelecting) {
+        preview.setAttribute('x', Math.min(start.x, p.x)); preview.setAttribute('y', Math.min(start.y, p.y));
+        preview.setAttribute('width', Math.abs(p.x - start.x)); preview.setAttribute('height', Math.abs(p.y - start.y));
+      } else if (state.drawMode === 'free') {
         freePoints.push(p);
         preview.setAttribute('d', freePoints.map((point, index) => `${index ? 'L' : 'M'} ${point.x} ${point.y}`).join(' '));
       } else if (state.drawMode === 'leader') {
@@ -685,7 +904,19 @@
     svg.addEventListener('pointerup', event => {
       if (!start) return;
       const p = point(event);
-      const item = { type: state.drawMode, x1: start.x, y1: start.y, x2: p.x, y2: p.y, ...drawingStyle(), damageInfo: annotationMetadata() };
+      if (rangeSelecting) {
+        const left = Math.min(start.x, p.x), right = Math.max(start.x, p.x), top = Math.min(start.y, p.y), bottom = Math.max(start.y, p.y);
+        const chosen = [...svg.querySelectorAll('.selectableAnnotation')].filter(node => {
+          const box = node.getBBox(); return box.x + box.width >= left && box.x <= right && box.y + box.height >= top && box.y <= bottom;
+        });
+        preview.remove(); start = null; preview = null; rangeSelecting = false;
+        if (chosen.length) {
+          const selections = chosen.map(node => ({ side, key: pageNumber, index: Number(node.dataset.annotationIndex), wrap }));
+          showAnnotationMiniMenu(event, side, pageNumber, selections[0].index, chosen[0], selections);
+        }
+        return;
+      }
+      const item = { id: annotationId(), type: state.drawMode, x1: start.x, y1: start.y, x2: p.x, y2: p.y, ...drawingStyle(), damageInfo: annotationMetadata() };
       if (state.drawMode === 'free') item.points = freePoints?.length > 1 ? freePoints : [start, p];
       if (state.drawMode === 'leader') {
         item.x3 = p.x + (p.x >= start.x ? 120 : -120);
@@ -708,6 +939,21 @@
       if (side === 'element') showDrawingRegistration(item);
     });
     wrap.appendChild(svg);
+    // Zooming redraws the PDF and replaces its SVG layer. Restore the active
+    // selection on the new layer instead of making the user select it again.
+    const selected = state.selectedAnnotation;
+    if (selected && !state.annotationCopyArmed && selected.side === side) {
+      const matching = (selected.selections || [selected]).filter(selection => String(selection.key) === String(pageNumber));
+      if (matching.length) requestAnimationFrame(() => {
+        if (state.selectedAnnotation !== selected || !svg.isConnected) return;
+        const restored = matching.map(selection => ({ ...selection, wrap }));
+        const nodes = restored.map(selection => svg.querySelector(`[data-annotation-index="${selection.index}"]`)).filter(Boolean);
+        if (!nodes.length) return;
+        selected.wrap = wrap; selected.selections = restored;
+        nodes.forEach(node => node.classList.add('selectedAnnotation'));
+        addSelectionControls(svg, nodes, restored);
+      });
+    }
   }
   async function addDamageHotspots(page, wrap, cssScale, pageNumber = state.element.page) {
     const content = await page.getTextContent();
@@ -1775,7 +2021,8 @@
     button.classList.toggle('hiddenPanel', !reviewCount);
     button.textContent = `確認 ${reviewCount}`;
     renderRecognitionResults();
-    if (reviewCount) $('recognitionResultPane').classList.remove('hiddenPanel');
+    // Audits also run after zoom/redraw. Keep the result count current, but
+    // never open the panel implicitly; it opens only from the top button.
   }
   function renderRecognitionResults() {
     const missingElementCount = state.missingDamageNumbers.length, missingPhotoCount = state.missingPhotoNumbers.length;
@@ -1882,6 +2129,7 @@
   }
   function hidePhotoPanel() { $('photoPane').classList.add('hiddenPanel'); applyPhotoDockLayout(); }
   async function jumpToDamage(raw, requestedSpan = null) {
+    const elementViewBeforePhoto = captureElementView();
     const numbers = (Array.isArray(raw) ? raw : [raw])
       .map(value => String(Number(normalizeDigits(String(value)).replace(/\D/g, ''))))
       .filter(number => number && number !== 'NaN');
@@ -1891,7 +2139,7 @@
     document.querySelectorAll('#elementViewer .hotspot').forEach(hotspot => {
       hotspot.classList.toggle('selected', numbers.some(value => damageNumbers(hotspot.dataset.label || '').includes(value)));
     });
-    if (!state.photo.doc) { showPhotoPanel(false); $('matchStatus').textContent = '先に損傷写真PDFを選択してください'; return; }
+    if (!state.photo.doc) { showPhotoPanel(false); $('matchStatus').textContent = '先に損傷写真PDFを選択してください'; await restoreElementView(elementViewBeforePhoto); return; }
     const currentSpan = requestedSpan === null
       ? String(state.elementSpanNumbers.get(state.element.page) || '')
       : normalizeDigits(String(requestedSpan)).replace(/[^0-9A-Za-z_-]/g, '');
@@ -1902,7 +2150,7 @@
     // A single photo record may be indexed under every number in a grouped
     // label such as 27,28. Display that physical record only once.
     const indexedEntries = [...new Map(combinedEntries.map(entry => [`${entry.page}:${entry.focus.column}:${entry.focus.row}`, entry])).values()];
-    if (!indexedEntries.length) { showPhotoPanel(false); $('matchStatus').textContent = `${numbers.map(value => `損傷${value.padStart(2, '0')}`).join('・')}が見つかりません`; return; }
+    if (!indexedEntries.length) { showPhotoPanel(false); $('matchStatus').textContent = `${numbers.map(value => `損傷${value.padStart(2, '0')}`).join('・')}が見つかりません`; await restoreElementView(elementViewBeforePhoto); return; }
     const photoNumberValue = entry => {
       const digits = normalizeDigits(String(entry.record?.photoNumber || '')).match(/\d+/)?.[0];
       return digits ? Number(digits) : Number.POSITIVE_INFINITY;
@@ -1945,6 +2193,7 @@
     try {
       await renderSide('photo');
       placePhotoPaneInViewer(false);
+      await restoreElementView(elementViewBeforePhoto);
     } finally {
       pane.classList.remove('preparing');
     }
@@ -1963,7 +2212,7 @@
   }
   function bindZoom(side) {
     const change = (factor) => {
-      state[side].zoom = Math.max(.5, Math.min(8, state[side].zoom * factor));
+      state[side].zoom = Math.max(MIN_PDF_ZOOM, Math.min(MAX_PDF_ZOOM, state[side].zoom * factor));
       renderSide(side);
     };
     $(side + 'ZoomOut').addEventListener('click', () => change(1 / 1.25));
@@ -1982,6 +2231,28 @@
     let pinchAnchor = null;
     let previewRatio = 1;
     let wheelTimer = 0;
+    let panStart = null;
+    viewer.addEventListener('pointerdown', event => {
+      const temporaryPan = event.button === 1;
+      if (!temporaryPan && !(state.drawMode === 'pan' && state.drawingSide === side)) return;
+      panStart = { x: event.clientX, y: event.clientY, left: viewer.scrollLeft, top: viewer.scrollTop, pointerId: event.pointerId };
+      viewer.setPointerCapture(event.pointerId); viewer.classList.add('panning');
+      event.preventDefault(); event.stopPropagation();
+    }, true);
+    viewer.addEventListener('pointermove', event => {
+      if (!panStart || event.pointerId !== panStart.pointerId) return;
+      viewer.scrollLeft = panStart.left - (event.clientX - panStart.x);
+      viewer.scrollTop = panStart.top - (event.clientY - panStart.y);
+      event.preventDefault(); event.stopPropagation();
+    }, true);
+    const finishPan = event => {
+      if (!panStart || event.pointerId !== panStart.pointerId) return;
+      panStart = null; viewer.classList.remove('panning');
+      if (viewer.hasPointerCapture(event.pointerId)) viewer.releasePointerCapture(event.pointerId);
+      event.preventDefault(); event.stopPropagation();
+    };
+    viewer.addEventListener('pointerup', finishPan, true);
+    viewer.addEventListener('pointercancel', finishPan, true);
     const distance = touches => Math.hypot(
       touches[0].clientX - touches[1].clientX,
       touches[0].clientY - touches[1].clientY
@@ -2055,7 +2326,7 @@
     }, { passive: false });
     viewer.addEventListener('touchmove', event => {
       if (event.touches.length !== 2 || !pinchStartDistance) return;
-      const nextZoom = Math.max(.5, Math.min(8, pinchStartZoom * distance(event.touches) / pinchStartDistance));
+      const nextZoom = Math.max(MIN_PDF_ZOOM, Math.min(MAX_PDF_ZOOM, pinchStartZoom * distance(event.touches) / pinchStartDistance));
       previewRatio = nextZoom / pinchStartZoom;
       target.zoom = nextZoom;
       $(side + 'ZoomLabel').textContent = `${Math.round(nextZoom * 100)}%`;
@@ -2083,7 +2354,7 @@
       event.preventDefault();
       const anchor = captureAnchor(event.clientX, event.clientY);
       const factor = Math.exp(-event.deltaY * .0015);
-      target.zoom = Math.max(.5, Math.min(8, target.zoom * factor));
+      target.zoom = Math.max(MIN_PDF_ZOOM, Math.min(MAX_PDF_ZOOM, target.zoom * factor));
       $(side + 'ZoomLabel').textContent = `${Math.round(target.zoom * 100)}%`;
       clearTimeout(wheelTimer);
       wheelTimer = setTimeout(async () => {
@@ -2439,7 +2710,7 @@
     placePhotoPaneInViewer(false);
     event.currentTarget.setAttribute('aria-pressed', String(maximized));
     event.currentTarget.textContent = maximized ? '元サイズ' : '最大化';
-    await renderSide('element');
+    await renderElementPreservingView();
     await renderSide('photo');
   });
   $('photoDockMode').addEventListener('click', async event => {
@@ -2447,7 +2718,7 @@
     state.photo.dockMode = modes[(modes.indexOf(state.photo.dockMode) + 1) % modes.length];
     event.currentTarget.textContent = ({ free: '位置：フリー', right: '位置：右', left: '位置：左' })[state.photo.dockMode];
     applyPhotoDockLayout();
-    await renderSide('element');
+    await renderElementPreservingView();
     await renderSide('photo');
   });
   let photoDividerDrag = null;
@@ -2469,7 +2740,7 @@
   const finishPhotoDividerDrag = async event => {
     if (!photoDividerDrag) return;
     photoDividerDrag = null; event.currentTarget.classList.remove('dragging');
-    await renderSide('element'); await renderSide('photo');
+    await renderElementPreservingView(); await renderSide('photo');
   };
   $('photoDockDivider').addEventListener('pointerup', finishPhotoDividerDrag);
   $('photoDockDivider').addEventListener('pointercancel', finishPhotoDividerDrag);
@@ -2506,7 +2777,7 @@
     // the resize handle. The current photo zoom is retained.
     state.photo.keepPaneHeight = true;
     photoResizeTimer = setTimeout(() => {
-      if (state.photo.dockMode !== 'free') { applyPhotoDockLayout(); renderSide('element'); }
+      if (state.photo.dockMode !== 'free') { applyPhotoDockLayout(); renderElementPreservingView(); }
       renderSide('photo');
     }, 120);
   });
@@ -2515,8 +2786,10 @@
     state.drawingSide = side;
     $('drawTargetElement').classList.toggle('active', side === 'element');
     $('drawTargetPhoto').classList.toggle('active', side === 'photo');
-    document.querySelectorAll('#elementViewer .annotationLayer').forEach(layer => layer.classList.toggle('drawing', side === 'element' && state.drawMode !== 'select'));
-    document.querySelectorAll('#photoViewer .annotationLayer').forEach(layer => layer.classList.toggle('drawing', side === 'photo' && state.drawMode !== 'select'));
+    document.querySelectorAll('#elementViewer .annotationLayer').forEach(layer => layer.classList.toggle('drawing', side === 'element' && !['select', 'pan'].includes(state.drawMode)));
+    document.querySelectorAll('#photoViewer .annotationLayer').forEach(layer => layer.classList.toggle('drawing', side === 'photo' && !['select', 'pan'].includes(state.drawMode)));
+    document.querySelectorAll('#elementViewer .annotationLayer').forEach(layer => layer.classList.toggle('selecting', side === 'element' && state.drawMode === 'select' && !$('commonDrawTools').classList.contains('hiddenPanel')));
+    document.querySelectorAll('#photoViewer .annotationLayer').forEach(layer => layer.classList.toggle('selecting', side === 'photo' && state.drawMode === 'select' && !$('commonDrawTools').classList.contains('hiddenPanel')));
     $('globalStatus').textContent = `作図先：${side === 'photo' ? '損傷写真' : '要素番号図'}`;
   }
   $('drawTargetElement').addEventListener('click', () => setDrawingSide('element'));
@@ -2526,6 +2799,64 @@
   });
   $('elementViewer').addEventListener('pointerdown', () => setDrawingSide('element'), true);
   $('photoViewer').addEventListener('pointerdown', () => setDrawingSide('photo'), true);
+  $('annotationCopy').addEventListener('click', () => {
+    if (!state.selectedAnnotation) return;
+    state.annotationCopyArmed = true;
+    $('annotationMiniMenu').classList.add('hiddenPanel');
+    document.querySelectorAll('.selectionControls').forEach(item => item.remove());
+    $('globalStatus').textContent = 'コピーの貼り付け位置を図面上でタップしてください';
+  });
+  const resizeSelectedAnnotations = async factor => {
+    const selected = state.selectedAnnotation; if (!selected) return;
+    const selections = selected.selections || [selected];
+    const items = selections.map(selection => annotationList(selection.key, selection.side)[selection.index]).filter(Boolean);
+    if (!items.length) return;
+    for (const item of items) removeMirroredPhotoAnnotation(selected.key, item.id);
+    scaleAnnotations(items, factor);
+    if (selected.side === 'photo') for (const item of items) mirrorPhotoRecordAnnotation(selected.wrap, selected.key, item);
+    await renderSide(selected.side);
+    const svg = [...document.querySelectorAll('.annotationLayer')].find(layer => layer.dataset.annotationSide === selected.side && layer.dataset.annotationKey === String(selected.key));
+    if (svg) {
+      const restored = selections.map(selection => ({ ...selection, wrap: svg.closest('.pageWrap') }));
+      const nodes = restored.map(selection => svg.querySelector(`[data-annotation-index="${selection.index}"]`)).filter(Boolean);
+      state.selectedAnnotation = { ...selected, wrap: svg.closest('.pageWrap'), selections: restored };
+      nodes.forEach(node => node.classList.add('selectedAnnotation'));
+      addSelectionControls(svg, nodes, restored);
+    }
+    $('globalStatus').textContent = `${items.length}個の作図を${factor > 1 ? '拡大' : '縮小'}しました（続けて変更できます）`;
+  };
+  $('annotationShrink').addEventListener('click', () => resizeSelectedAnnotations(.8));
+  $('annotationGrow').addEventListener('click', () => resizeSelectedAnnotations(1.25));
+  $('annotationDelete').addEventListener('click', () => {
+    const selected = state.selectedAnnotation; if (!selected) return;
+    const selections = selected.selections || [selected];
+    const grouped = new Map();
+    for (const selection of selections) {
+      const groupKey = `${selection.side}|${selection.key}`;
+      if (!grouped.has(groupKey)) grouped.set(groupKey, { ...selection, indexes: [] });
+      grouped.get(groupKey).indexes.push(selection.index);
+    }
+    for (const group of grouped.values()) {
+      const items = annotationList(group.key, group.side);
+      for (const index of group.indexes.sort((a, b) => b - a)) {
+        const item = items[index]; if (!item) continue;
+        removeMirroredPhotoAnnotation(group.key, item.id); items.splice(index, 1);
+      }
+    }
+    $('annotationMiniMenu').classList.add('hiddenPanel'); state.selectedAnnotation = null;
+    renderSide(selected.side);
+    if (selected.side === 'element' && !$('damageListPane').classList.contains('hiddenPanel')) renderDamageList();
+    $('globalStatus').textContent = `${selections.length}個の作図を消去しました`;
+  });
+  document.addEventListener('pointerdown', event => {
+    if (event.target.closest('#annotationMiniMenu, .selectableAnnotation, .selectionControls, .zoomBar')) return;
+    if (!state.annotationCopyArmed) {
+      $('annotationMiniMenu').classList.add('hiddenPanel');
+      state.selectedAnnotation = null;
+      document.querySelectorAll('.selectedAnnotation').forEach(item => item.classList.remove('selectedAnnotation'));
+      document.querySelectorAll('.selectionControls').forEach(item => item.remove());
+    }
+  });
   $('topDrawToggle').addEventListener('click', event => {
     const tools = $('commonDrawTools');
     const closing = !tools.classList.contains('hiddenPanel');
@@ -2537,7 +2868,14 @@
       document.querySelectorAll('[data-draw]').forEach(item => item.classList.remove('active'));
       document.querySelectorAll('.annotationLayer').forEach(layer => layer.classList.remove('drawing'));
     }
-    setTimeout(() => { renderSide('element'); renderSide('photo'); }, 30);
+    setTimeout(async () => {
+      // Opening the common command row moves the work area downward. Refit
+      // the photo pane after that layout settles so it never covers commands.
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      if (!$('photoPane').classList.contains('hiddenPanel')) placePhotoPaneInViewer(false);
+      await renderElementPreservingView();
+      await renderSide('photo');
+    }, 30);
   });
   document.querySelectorAll('[data-draw]').forEach(button => button.addEventListener('click', () => {
     if (button.dataset.draw === 'undo') {
@@ -2559,11 +2897,19 @@
       $('globalStatus').textContent = '最後の作図を戻しました';
       return;
     }
-    state.drawMode = button.dataset.draw;
+    if (button.dataset.draw === 'pan') {
+      state.drawMode = state.drawMode === 'pan' ? (state.previousDrawMode || 'free') : (state.previousDrawMode = state.drawMode, 'pan');
+    } else {
+      state.drawMode = button.dataset.draw;
+      if (state.drawMode !== 'select') state.previousDrawMode = state.drawMode;
+    }
     document.querySelectorAll('[data-draw]').forEach(item => item.classList.remove('active'));
-    button.classList.add('active');
+    const activeButton = document.querySelector(`[data-draw="${state.drawMode}"]`);
+    activeButton?.classList.add('active');
     setDrawingSide(state.drawingSide);
-    $('globalStatus').textContent = `${state.drawingSide === 'photo' ? '損傷写真' : '要素番号図'} 作図：${button.getAttribute('aria-label') || button.textContent}`;
+    $('globalStatus').textContent = state.drawMode === 'pan'
+      ? '画面移動：図面をドラッグしてください（もう一度押すと作図へ戻ります）'
+      : `${state.drawingSide === 'photo' ? '損傷写真' : '要素番号図'} 作図：${activeButton?.getAttribute('aria-label') || activeButton?.textContent || ''}`;
   }));
   $('backButton').addEventListener('click', () => { location.href = '../?mode=draw'; });
   const updateNetworkStatus = () => {

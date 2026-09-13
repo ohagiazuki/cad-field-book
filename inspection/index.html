@@ -7,11 +7,11 @@
     // OCR uses Web Workers and WASM, which browsers block on file:// pages.
     // When this HTML is opened directly, switch to the local web server where
     // the exact same files can run with a normal HTTP origin.
-    if (location.protocol === 'file:') location.replace('http://127.0.0.1:8098/inspection/index.html?v=344');
+    if (location.protocol === 'file:') location.replace('http://127.0.0.1:8098/inspection/index.html?v=357');
   </script>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>点検モード | CAD野帳</title>
-  <link rel="stylesheet" href="inspection.css?v=344">
+  <link rel="stylesheet" href="inspection.css?v=357">
 </head>
 <body>
   <header>
@@ -22,6 +22,7 @@
   </header>
   <div id="commonDrawTools" class="commonDrawTools hiddenPanel">
     <div class="drawTarget"><span>作図先</span><button id="drawTargetElement" class="active">要素番号図</button><button id="drawTargetPhoto">損傷写真</button></div>
+    <button class="iconButton panStandalone" data-draw="pan" aria-label="画面移動" title="画面移動（もう一度押すと作図へ戻る）"><svg viewBox="0 0 24 24"><path d="M7 11V7a2 2 0 014 0v3-5a2 2 0 014 0v5-3a2 2 0 014 0v5-2a2 2 0 014 0v5c0 4-3 7-7 7h-1c-3 0-5-2-7-5l-2-4a2 2 0 013-2l2 2"/></svg></button>
     <div class="drawBar" aria-label="共通作図コマンド"><div class="drawGroup editGroup"><button class="iconButton" data-draw="select" aria-label="選択" title="選択"><svg viewBox="0 0 24 24"><path d="M5 3l13 9-6 1 4 6-3 2-4-6-4 4z"/></svg></button><button class="iconButton" data-draw="undo" aria-label="戻す" title="戻す"><svg viewBox="0 0 24 24"><path d="M9 7L4 12l5 5v-3h5a5 5 0 010 5h-2v2h2a7 7 0 000-9H9z"/></svg></button></div><div class="drawGroup commandGroup"><button class="iconButton" data-draw="line" aria-label="線" title="線"><svg viewBox="0 0 24 24"><path d="M4 19L20 5"/></svg></button><button class="iconButton" data-draw="free" aria-label="フリー作図" title="フリー作図"><svg viewBox="0 0 24 24"><path d="M3 17c3-12 5 5 8-6s3 10 10-5"/></svg></button><button class="iconButton" data-draw="arrow" aria-label="矢印" title="矢印"><svg viewBox="0 0 24 24"><path d="M4 12h15M14 7l5 5-5 5"/></svg></button><button class="iconButton" data-draw="leader" aria-label="引き出し" title="引き出し"><svg viewBox="0 0 24 24"><path d="M3 19l7-8h10M3 19l2-6 4 4z"/></svg></button><button class="iconButton" data-draw="rect" aria-label="四角" title="四角"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14"/></svg></button><button class="iconButton" data-draw="ellipse" aria-label="楕円" title="楕円"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="9" ry="6"/></svg></button><button class="iconButton" data-draw="text" aria-label="文字" title="文字"><svg viewBox="0 0 24 24"><path d="M5 5h14M12 5v15M8 20h8"/></svg></button></div><div class="drawGroup styleGroup"><label>色<input id="drawColor" type="color" value="#e53935" aria-label="作図色"></label><label>幅<select id="drawWidth" aria-label="線幅"><option value="1.5">細</option><option value="3" selected>標準</option><option value="5">太</option><option value="8">極太</option></select></label><label>線<select id="drawDash" aria-label="線種"><option value="">実線</option><option value="12 7">破線</option><option value="2 6">点線</option><option value="14 5 2 5">一点鎖線</option></select></label></div></div>
     <div class="drawStyleOptions" aria-label="作図の色と文字サイズ"><button type="button" class="boxedNumberTool" data-draw="boxedNumber" aria-label="四角囲み写真番号" title="四角囲み写真番号"><span>12</span> 写真番号</button><span>基本色</span><div class="colorPalette"><button type="button" class="colorSwatch active" data-draw-color="#e53935" aria-label="赤" title="赤"></button><button type="button" class="colorSwatch" data-draw-color="#1565c0" aria-label="青" title="青"></button><button type="button" class="colorSwatch" data-draw-color="#2e7d32" aria-label="緑" title="緑"></button><button type="button" class="colorSwatch" data-draw-color="#ef6c00" aria-label="オレンジ" title="オレンジ"></button></div><label>文字サイズ<select id="drawFontSize" aria-label="文字サイズ"><option value="14">小</option><option value="18" selected>標準</option><option value="24">大</option><option value="32">特大</option></select></label></div>
     <div class="imageToolOptions"><button type="button" id="insertImageButton" class="compactTool" aria-label="画像挿入">画像挿入</button><input id="insertImageFile" type="file" accept="image/*" hidden><button type="button" class="compactTool" data-draw="screenCopy" aria-label="部分スクショコピー">部分スクショコピー</button></div>
@@ -72,6 +73,7 @@
   </aside>
   <aside id="recognitionResultPane" class="recognitionResultPane hiddenPanel" aria-label="損傷番号の確認結果"><div class="recognitionResultHeader"><strong>損傷番号の確認結果</strong><button id="recognitionResultClose">閉じる</button></div><p id="recognitionResultSummary"></p><div id="recognitionResultList"></div></aside>
   <aside id="hotspotEditor" class="hotspotEditor hiddenPanel" aria-label="オレンジ枠の編集"><div><strong>オレンジ枠を編集</strong><button id="hotspotEditorClose">閉じる</button></div><label>損傷番号<input id="hotspotNumberInput" inputmode="numeric" placeholder="例：01 または 16,17"></label><p>枠の移動は、図面上のオレンジ枠をドラッグします。</p><div class="hotspotEditorActions"><button id="hotspotNumberSave">番号を修正</button><button id="hotspotDelete" class="dangerButton">枠を削除</button></div></aside>
+  <div id="annotationMiniMenu" class="annotationMiniMenu hiddenPanel"><span id="annotationSelectionCount">1個</span><button id="annotationCopy">コピー</button><button id="annotationShrink">縮小</button><button id="annotationGrow">拡大</button><button id="annotationDelete" class="dangerButton">消去</button></div>
   <div id="hotspotAddDialog" class="drawingInfoBackdrop hiddenPanel" role="dialog" aria-modal="true" aria-label="オレンジ枠を追加"><section class="hotspotAddCard"><strong>オレンジ枠を追加</strong><label>径間番号<input id="addHotspotSpan" inputmode="numeric" placeholder="例：1"></label><label>損傷番号<input id="addHotspotNumber" inputmode="numeric" placeholder="例：01 または 16,17"></label><p>登録後、表示中の要素番号図で枠の位置をタップします。</p><div><button id="addHotspotCancel">取消</button><button id="addHotspotStart">位置を指定</button></div></section></div>
   <div id="drawingInfoDialog" class="drawingInfoBackdrop hiddenPanel" role="dialog" aria-modal="true" aria-label="作図情報の登録">
     <section class="drawingInfoCard"><div class="drawingInfoHeader"><strong>作図情報を登録</strong><button id="drawingInfoClose">閉じる</button></div><p>表示中の要素番号図にある損傷番号と、評価表のコメントが一致する行です。</p><div id="drawingCandidateList" class="drawingCandidateList"></div><button id="drawingInfoNone" class="drawingInfoNone">情報を付けずに登録</button></section>
@@ -81,6 +83,6 @@
   </div>
   <script src="../pdfjs/pdf.min.js"></script>
   <script src="../tesseract/tesseract.min.js"></script>
-  <script src="inspection.js?v=344"></script>
+  <script src="inspection.js?v=357"></script>
 </body>
 </html>
