@@ -437,7 +437,7 @@
     copy.getContext('2d').drawImage(canvas, left, top, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
     canvas.width = cropWidth; canvas.height = cropHeight;
     canvas.getContext('2d').drawImage(copy, 0, 0);
-    return { width: cropWidth / dpr, height: cropHeight / dpr };
+    return { width: cropWidth / dpr, height: cropHeight / dpr, left: left / dpr, top: top / dpr };
   }
   async function renderPhotoMatches() {
     const target = state.photo;
@@ -477,6 +477,11 @@
       const trimmed = trimCanvasWhitespace(canvas, dpr);
       wrap.style.width = `${trimmed.width}px`;
       wrap.style.height = `${trimmed.height}px`;
+      wrap.dataset.photoPage = String(match.page);
+      wrap.dataset.photoViewX = String((crop.x + (trimmed.left || 0) / cssScale) / base.width * 1000);
+      wrap.dataset.photoViewY = String((crop.y + (trimmed.top || 0) / cssScale) / base.height * 1000);
+      wrap.dataset.photoViewWidth = String(trimmed.width / cssScale / base.width * 1000);
+      wrap.dataset.photoViewHeight = String(trimmed.height / cssScale / base.height * 1000);
       addDrawingLayer(wrap, `record:${match.page}:${match.focus.column}:${match.focus.row}`, 'photo');
     }
     target.viewer.classList.add('matchedPhotos');
@@ -540,6 +545,20 @@
     const store = side === 'photo' ? state.photoAnnotations : state.annotations;
     if (!store.has(pageNumber)) store.set(pageNumber, []);
     return store.get(pageNumber);
+  }
+  function mirrorPhotoRecordAnnotation(wrap, key, item) {
+    if (!String(key).startsWith('record:') || !wrap.dataset.photoPage) return;
+    const x = Number(wrap.dataset.photoViewX), y = Number(wrap.dataset.photoViewY);
+    const width = Number(wrap.dataset.photoViewWidth), height = Number(wrap.dataset.photoViewHeight);
+    if (![x, y, width, height].every(Number.isFinite)) return;
+    const copy = { ...item, sourceRecordKey: key };
+    const mapPoint = point => ({ x: x + point.x / 1000 * width, y: y + point.y / 1000 * height });
+    for (const suffix of ['1', '2', '3']) {
+      if (Number.isFinite(item[`x${suffix}`])) copy[`x${suffix}`] = x + item[`x${suffix}`] / 1000 * width;
+      if (Number.isFinite(item[`y${suffix}`])) copy[`y${suffix}`] = y + item[`y${suffix}`] / 1000 * height;
+    }
+    if (item.points) copy.points = item.points.map(mapPoint);
+    annotationList(`overview:${wrap.dataset.photoPage}`, 'photo').push(copy);
   }
   function svgNode(name, attributes = {}) {
     const node = document.createElementNS('http://www.w3.org/2000/svg', name);
@@ -616,7 +635,9 @@
         const value = await requestBoxedNumber();
         if (value) {
           const item = { type: 'boxedNumber', x1: p.x, y1: p.y, text: value, ...drawingStyle(), damageInfo: annotationMetadata() };
-          annotationList(pageNumber, side).push(item); renderSide(side);
+          annotationList(pageNumber, side).push(item);
+          if (side === 'photo') mirrorPhotoRecordAnnotation(wrap, pageNumber, item);
+          renderSide(side);
           if (side === 'element' && !$('damageListPane').classList.contains('hiddenPanel')) renderDamageList();
           if (side === 'element') showDrawingRegistration(item);
         }
@@ -627,6 +648,7 @@
         if (value) {
           const item = { type: 'text', x1: p.x, y1: p.y, text: value, ...drawingStyle(), damageInfo: annotationMetadata() };
           annotationList(pageNumber, side).push(item);
+          if (side === 'photo') mirrorPhotoRecordAnnotation(wrap, pageNumber, item);
           renderSide(side);
           if (side === 'element' && !$('damageListPane').classList.contains('hiddenPanel')) renderDamageList();
           if (side === 'element') showDrawingRegistration(item);
@@ -679,6 +701,7 @@
       }
       if (state.drawMode === 'image') item.imageData = state.pendingImage;
       annotationList(pageNumber, side).push(item);
+      if (side === 'photo') mirrorPhotoRecordAnnotation(wrap, pageNumber, item);
       start = null; preview = null; freePoints = null;
       renderSide(side);
       if (side === 'element' && !$('damageListPane').classList.contains('hiddenPanel')) renderDamageList();
@@ -1779,7 +1802,7 @@
         $('manualPlacementBanner').classList.remove('hiddenPanel');
         document.querySelectorAll('[data-draw]').forEach(item => item.classList.remove('active'));
         $('recognitionResultPane').classList.add('hiddenPanel'); await renderSide('element');
-        await jumpToDamage(result.number);
+        await jumpToDamage(result.number, result.spanNumber || null);
         $('globalStatus').textContent = `損傷${String(result.number).padStart(2, '0')}の位置を図面上でタップしてください`;
       });
       const ignore = document.createElement('button'); ignore.className = 'missingIgnore'; ignore.textContent = '登録なし';
@@ -1823,6 +1846,15 @@
   function applyPhotoDockLayout() {
     const pane = $('photoPane'), elementPane = $('elementPane'), main = document.querySelector('main'), divider = $('photoDockDivider');
     elementPane.style.width = '100%'; elementPane.style.height = '100%'; elementPane.style.marginLeft = '0'; elementPane.style.marginTop = '0';
+    // Maximized photo view is independent of the left/right split. Clear all
+    // dock-only geometry so the divider and the narrowed element pane cannot
+    // remain visible behind the maximized window.
+    if (pane.classList.contains('maximized')) {
+      pane.classList.remove('docked');
+      pane.style.removeProperty('max-height'); pane.style.removeProperty('max-width');
+      divider.classList.add('hiddenPanel');
+      return;
+    }
     pane.classList.toggle('docked', state.photo.dockMode !== 'free');
     if (state.photo.dockMode === 'free' || pane.classList.contains('hiddenPanel')) {
       pane.style.removeProperty('max-height'); pane.style.removeProperty('max-width');
@@ -1849,7 +1881,7 @@
     if (render) setTimeout(() => renderSide('photo'), 30);
   }
   function hidePhotoPanel() { $('photoPane').classList.add('hiddenPanel'); applyPhotoDockLayout(); }
-  async function jumpToDamage(raw) {
+  async function jumpToDamage(raw, requestedSpan = null) {
     const numbers = (Array.isArray(raw) ? raw : [raw])
       .map(value => String(Number(normalizeDigits(String(value)).replace(/\D/g, ''))))
       .filter(number => number && number !== 'NaN');
@@ -1860,7 +1892,10 @@
       hotspot.classList.toggle('selected', numbers.some(value => damageNumbers(hotspot.dataset.label || '').includes(value)));
     });
     if (!state.photo.doc) { showPhotoPanel(false); $('matchStatus').textContent = '先に損傷写真PDFを選択してください'; return; }
-    const currentSpan = String(state.elementSpanNumbers.get(state.element.page) || '');
+    const currentSpan = requestedSpan === null
+      ? String(state.elementSpanNumbers.get(state.element.page) || '')
+      : normalizeDigits(String(requestedSpan)).replace(/[^0-9A-Za-z_-]/g, '');
+    $('photoSpanInput').value = currentSpan;
     const combinedEntries = numbers.flatMap(value => (state.photoIndex.get(value) || [])
       .filter(entry => !currentSpan || !entry.record?.spanNumber || String(entry.record.spanNumber) === currentSpan)
       .map(entry => ({ ...entry, damageNumber: value })));
@@ -1890,6 +1925,7 @@
     pane.classList.add('preparing');
     state.currentDamage = {
       damageNumber: number,
+      spanNumber: currentSpan,
       elementPage: state.element.page,
       records: entries.map(entry => {
         const entryNumber = entry.damageNumber || number;
@@ -2182,7 +2218,7 @@
       tr.addEventListener('click', async () => {
         state.element.page = row.elementPage;
         await renderSide('element');
-        if (row.damageNumber) await jumpToDamage(row.damageNumber);
+        if (row.damageNumber) await jumpToDamage(row.damageNumber, row.spanNumber || null);
       });
       body.appendChild(tr);
     }
@@ -2220,14 +2256,38 @@
     $('globalStatus').textContent = '作図に付与した損傷情報をCSV保存しました';
   }
   $('pastDataFiles').addEventListener('change', e => e.target.files.length && loadPastData(e.target.files));
-  $('damageJump').addEventListener('click', () => jumpToDamage($('damageInput').value));
-  $('damageInput').addEventListener('keydown', e => { if (e.key === 'Enter') jumpToDamage(e.target.value); });
+  const jumpFromPhotoInputs = () => jumpToDamage($('damageInput').value, $('photoSpanInput').value);
+  $('damageJump').addEventListener('click', jumpFromPhotoInputs);
+  $('damageInput').addEventListener('keydown', e => { if (e.key === 'Enter') jumpFromPhotoInputs(); });
+  $('photoSpanInput').addEventListener('keydown', e => { if (e.key === 'Enter') jumpFromPhotoInputs(); });
   $('drawingCsv').addEventListener('click', exportDrawingCsv);
   $('damageListCsv').addEventListener('click', exportDrawingCsv);
   $('topDamageList').addEventListener('click', showDamageList);
   $('damageListClose').addEventListener('click', hideDamageList);
   $('recognitionResults').addEventListener('click', () => { renderRecognitionResults(); $('recognitionResultPane').classList.remove('hiddenPanel'); });
   $('recognitionResultClose').addEventListener('click', () => $('recognitionResultPane').classList.add('hiddenPanel'));
+  $('addHotspot').addEventListener('click', () => {
+    $('addHotspotSpan').value = String(state.elementSpanNumbers.get(state.element.page) || $('photoSpanInput').value || '');
+    $('addHotspotNumber').value = '';
+    $('hotspotAddDialog').classList.remove('hiddenPanel');
+    $('addHotspotNumber').focus();
+  });
+  $('addHotspotCancel').addEventListener('click', () => $('hotspotAddDialog').classList.add('hiddenPanel'));
+  $('addHotspotStart').addEventListener('click', () => {
+    const spanNumber = normalizeDigits($('addHotspotSpan').value).replace(/[^0-9A-Za-z_-]/g, '');
+    const numbers = [...new Set((normalizeDigits($('addHotspotNumber').value).match(/\d+/g) || [])
+      .map(value => String(Number(value))).filter(value => value !== 'NaN'))];
+    if (!spanNumber || !numbers.length) {
+      $('globalStatus').textContent = '径間番号と損傷番号を入力してください';
+      return;
+    }
+    state.pendingManualDamage = { number: numbers[0], numbers, page: state.element.page, spanNumber };
+    state.drawMode = 'select';
+    $('manualPlacementLabel').textContent = `設定中：${spanNumber}径間・${numbers.map(number => `損傷${formatDamageNumber(number)}`).join('・')}`;
+    $('hotspotAddDialog').classList.add('hiddenPanel');
+    $('manualPlacementBanner').classList.remove('hiddenPanel');
+    $('globalStatus').textContent = '要素番号図上でオレンジ枠を置く位置をタップしてください';
+  });
   $('hotspotEditMode').addEventListener('click', event => {
     state.hotspotEditMode = !state.hotspotEditMode;
     event.currentTarget.setAttribute('aria-pressed', String(state.hotspotEditMode));
@@ -2254,7 +2314,7 @@
     const rect = wrap.getBoundingClientRect();
     const selectedHotspot = event.target.closest('.hotspot');
     let x = (event.clientX - rect.left) / rect.width * 1000, y = (event.clientY - rect.top) / rect.height * 1000;
-    let numbers = [String(pending.number)];
+    let numbers = (pending.numbers || [pending.number]).map(String);
     if (selectedHotspot) {
       const existing = (selectedHotspot.dataset.numbers || '').split(',').filter(Boolean);
       const existingLabel = existing.map(number => `損傷${formatDamageNumber(number)}`).join('・');
@@ -2328,7 +2388,8 @@
       state.pendingImage = String(reader.result || ''); state.drawMode = 'image';
       document.querySelectorAll('[data-draw]').forEach(item => item.classList.remove('active'));
       $('insertImageButton').classList.add('active');
-      const layer = $('elementViewer').querySelector('.annotationLayer'); if (layer) layer.classList.add('drawing');
+      const viewer = state.drawingSide === 'photo' ? $('photoViewer') : $('elementViewer');
+      const layer = viewer.querySelector('.annotationLayer'); if (layer) layer.classList.add('drawing');
       $('globalStatus').textContent = '画像を配置する範囲をドラッグしてください';
     };
     reader.readAsDataURL(file); event.target.value = '';
@@ -2369,12 +2430,17 @@
       : `損傷${String(state.currentDamage?.damageNumber || '').padStart(2, '0')}：${state.photo.matches.length}件`;
     await renderSide('photo');
   });
-  $('photoMaximize').addEventListener('click', event => {
+  $('photoMaximize').addEventListener('click', async event => {
     const maximized = $('photoPane').classList.toggle('maximized');
+    applyPhotoDockLayout();
+    // Wait until the element pane has regained the full work-area width,
+    // then calculate the maximized photo bounds from that final layout.
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     placePhotoPaneInViewer(false);
     event.currentTarget.setAttribute('aria-pressed', String(maximized));
     event.currentTarget.textContent = maximized ? '元サイズ' : '最大化';
-    setTimeout(() => renderSide('photo'), 30);
+    await renderSide('element');
+    await renderSide('photo');
   });
   $('photoDockMode').addEventListener('click', async event => {
     const modes = ['free', 'right', 'left'];
@@ -2445,77 +2511,59 @@
     }, 120);
   });
   photoResizeObserver.observe($('photoPane'));
-  $('photoDrawToggle').addEventListener('click', event => {
-    const bar = $('photoDrawBar');
-    const opening = bar.classList.contains('hiddenPanel');
-    bar.classList.toggle('hiddenPanel', !opening);
-    event.currentTarget.setAttribute('aria-pressed', String(opening));
-    event.currentTarget.textContent = opening ? '写真作図終了' : '写真に作図';
-    state.drawingSide = 'photo'; state.drawMode = opening ? 'free' : 'select';
-    document.querySelectorAll('[data-photo-draw]').forEach(item => item.classList.remove('active'));
-    if (opening) document.querySelector('[data-photo-draw="free"]')?.classList.add('active');
-    document.querySelectorAll('#elementViewer .annotationLayer').forEach(layer => layer.classList.remove('drawing'));
-    document.querySelectorAll('#photoViewer .annotationLayer').forEach(layer => layer.classList.toggle('drawing', opening));
-    $('globalStatus').textContent = opening
-      ? '写真フリー作図モード：写真上をドラッグしてください'
-      : '写真作図を終了しました';
+  function setDrawingSide(side) {
+    state.drawingSide = side;
+    $('drawTargetElement').classList.toggle('active', side === 'element');
+    $('drawTargetPhoto').classList.toggle('active', side === 'photo');
+    document.querySelectorAll('#elementViewer .annotationLayer').forEach(layer => layer.classList.toggle('drawing', side === 'element' && state.drawMode !== 'select'));
+    document.querySelectorAll('#photoViewer .annotationLayer').forEach(layer => layer.classList.toggle('drawing', side === 'photo' && state.drawMode !== 'select'));
+    $('globalStatus').textContent = `作図先：${side === 'photo' ? '損傷写真' : '要素番号図'}`;
+  }
+  $('drawTargetElement').addEventListener('click', () => setDrawingSide('element'));
+  $('drawTargetPhoto').addEventListener('click', () => {
+    if ($('photoPane').classList.contains('hiddenPanel')) $('topPhotoToggle').click();
+    setDrawingSide('photo');
   });
-  document.querySelectorAll('[data-photo-color]').forEach(button => button.addEventListener('click', () => {
-    $('drawColor').value = button.dataset.photoColor;
-    document.querySelectorAll('[data-photo-color]').forEach(item => item.classList.toggle('active', item === button));
-  }));
-  $('photoDrawWidth').addEventListener('change', event => { $('drawWidth').value = event.target.value; });
-  document.querySelectorAll('[data-photo-draw]').forEach(button => button.addEventListener('click', () => {
-    state.drawingSide = 'photo';
-    if (button.dataset.photoDraw === 'undo') {
-      const key = state.activePhotoAnnotationKey || [...state.photoAnnotations.keys()].at(-1);
-      const items = key ? annotationList(key, 'photo') : [];
-      if (items.length) items.pop();
-      renderSide('photo'); $('globalStatus').textContent = '写真上の最後の作図を戻しました'; return;
-    }
-    state.drawMode = button.dataset.photoDraw;
-    document.querySelectorAll('[data-photo-draw]').forEach(item => item.classList.remove('active'));
-    button.classList.add('active');
-    document.querySelectorAll('[data-draw]').forEach(item => item.classList.remove('active'));
-    document.querySelectorAll('#elementViewer .annotationLayer').forEach(layer => layer.classList.remove('drawing'));
-    document.querySelectorAll('#photoViewer .annotationLayer').forEach(layer => layer.classList.toggle('drawing', state.drawMode !== 'select'));
-    $('globalStatus').textContent = `写真作図モード：${button.title || button.textContent}`;
-  }));
+  $('elementViewer').addEventListener('pointerdown', () => setDrawingSide('element'), true);
+  $('photoViewer').addEventListener('pointerdown', () => setDrawingSide('photo'), true);
   $('topDrawToggle').addEventListener('click', event => {
-    const bar = document.querySelector('.drawBar');
-    const styleOptions = document.querySelector('.drawStyleOptions');
-    const imageOptions = document.querySelector('.imageToolOptions');
-    const opened = bar.classList.toggle('hiddenPanel');
-    styleOptions.classList.toggle('hiddenPanel', opened);
-    imageOptions.classList.toggle('hiddenPanel', opened);
-    event.currentTarget.classList.toggle('active', !opened);
-    event.currentTarget.textContent = opened ? '作図' : '作図終了';
-    if (opened) {
+    const tools = $('commonDrawTools');
+    const closing = !tools.classList.contains('hiddenPanel');
+    tools.classList.toggle('hiddenPanel', closing);
+    event.currentTarget.classList.toggle('active', !closing);
+    event.currentTarget.textContent = closing ? '作図' : '作図終了';
+    if (closing) {
       state.drawMode = 'select';
       document.querySelectorAll('[data-draw]').forEach(item => item.classList.remove('active'));
-      const layer = $('elementViewer').querySelector('.annotationLayer');
-      if (layer) layer.classList.remove('drawing');
+      document.querySelectorAll('.annotationLayer').forEach(layer => layer.classList.remove('drawing'));
     }
-    setTimeout(() => renderSide('element'), 30);
+    setTimeout(() => { renderSide('element'); renderSide('photo'); }, 30);
   });
   document.querySelectorAll('[data-draw]').forEach(button => button.addEventListener('click', () => {
     if (button.dataset.draw === 'undo') {
-      const items = annotationList(state.element.page);
-      if (items.length) items.pop();
-      renderSide('element');
-      if (!$('damageListPane').classList.contains('hiddenPanel')) renderDamageList();
+      const key = state.drawingSide === 'photo'
+        ? (state.activePhotoAnnotationKey || [...state.photoAnnotations.keys()].at(-1))
+        : state.element.page;
+      const items = key ? annotationList(key, state.drawingSide) : [];
+      if (items.length) {
+        items.pop();
+        const match = String(key).match(/^record:(\d+):/);
+        if (match) {
+          const overview = annotationList(`overview:${match[1]}`, 'photo');
+          const mirroredIndex = overview.findLastIndex(item => item.sourceRecordKey === key);
+          if (mirroredIndex >= 0) overview.splice(mirroredIndex, 1);
+        }
+      }
+      renderSide(state.drawingSide);
+      if (state.drawingSide === 'element' && !$('damageListPane').classList.contains('hiddenPanel')) renderDamageList();
       $('globalStatus').textContent = '最後の作図を戻しました';
       return;
     }
-    state.drawingSide = 'element';
     state.drawMode = button.dataset.draw;
     document.querySelectorAll('[data-draw]').forEach(item => item.classList.remove('active'));
     button.classList.add('active');
-    document.querySelectorAll('[data-photo-draw]').forEach(item => item.classList.remove('active'));
-    document.querySelectorAll('#photoViewer .annotationLayer').forEach(layer => layer.classList.remove('drawing'));
-    const layer = $('elementViewer').querySelector('.annotationLayer');
-    if (layer) layer.classList.toggle('drawing', state.drawMode !== 'select');
-    $('globalStatus').textContent = `作図モード：${button.getAttribute('aria-label') || button.textContent}`;
+    setDrawingSide(state.drawingSide);
+    $('globalStatus').textContent = `${state.drawingSide === 'photo' ? '損傷写真' : '要素番号図'} 作図：${button.getAttribute('aria-label') || button.textContent}`;
   }));
   $('backButton').addEventListener('click', () => { location.href = '../?mode=draw'; });
   const updateNetworkStatus = () => {
