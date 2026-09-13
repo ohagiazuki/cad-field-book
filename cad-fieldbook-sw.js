@@ -4,7 +4,7 @@ const CACHE_PREFIX = 'cad-fieldbook-offline-';
 // Increment this value whenever the web application is published.
 // Static files are served cache-first, so reusing an old value would keep an
 // older main.dart.js even after a new build has been deployed.
-const CACHE_NAME = `${CACHE_PREFIX}20260910-inspection-span-csv250`;
+const CACHE_NAME = `${CACHE_PREFIX}20260913-inspection-photo-draw-default341`;
 const CORE_FILES = [
   './',
   'index.html',
@@ -17,6 +17,11 @@ const CORE_FILES = [
   'icons/Icon-512.png',
   'icons/Icon-maskable-192.png',
   'icons/Icon-maskable-512.png',
+  'tesseract/tesseract.min.js',
+  'tesseract/worker.min.js',
+  'tesseract/tesseract-core-lstm.wasm.js',
+  'tesseract/tesseract-core-lstm.wasm',
+  'tesseract/lang/jpn.traineddata.gz',
 ];
 
 async function addInBatches(cache, urls) {
