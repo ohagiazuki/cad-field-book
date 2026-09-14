@@ -24,7 +24,7 @@
     photo: { doc: null, page: 1, viewer: $('photoViewer'), label: $('photoPage'), zoom: 1, focus: null, matches: null, pageOverview: false, fitPaneAfterRender: false, dockMode: 'free' },
     photoIndex: new Map(), damageNumberDigits: 2, assessmentIndex: new Map(), assessmentRows: [], assessmentDoc: null, assessmentFocusNumbers: [], assessmentFocusSpan: '', currentDamage: null, renderToken: { element: 0, photo: 0 },
     ocrWorker: null, ocrHotspots: new Map(), textDamageNumbers: new Map(), elementSpanNumbers: new Map(), ocrJobs: new Map(), ocrProgress: null, missingDamageNumbers: [], missingPhotoNumbers: [], ignoredMissing: new Set(), manualHotspots: new Map(), hotspotOverrides: new Map(), pendingManualDamage: null,
-    drawMode: 'select', previousDrawMode: 'free', drawingSide: 'element', pendingImage: '', annotations: new Map(), photoAnnotations: new Map(), activePhotoAnnotationKey: null, selectedAnnotation: null, annotationCopyArmed: false, hotspotEditMode: false, editingHotspot: null
+    drawMode: 'select', previousDrawMode: 'free', drawingSide: 'element', pendingImage: '', annotations: new Map(), photoAnnotations: new Map(), activePhotoAnnotationKey: null, selectedAnnotation: null, annotationCopyArmed: false, hotspotEditMode: false, editingHotspot: null, hotspotFocusNumbers: []
   };
   const cleanField = value => String(value || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
   function fieldRightOf(items, pattern) {
@@ -294,8 +294,11 @@
         const value = index => logical.values[index] || '';
         const diagnosisAndComment = value(7);
         const separated = diagnosisAndComment.match(/^\s*(IV|III|II|I|Ⅰ|Ⅱ|Ⅲ|Ⅳ|[1-4])\s*[|｜]?\s*(.*)$/i);
-        const diagnosis = separated ? separated[1].toUpperCase() : (/損傷/.test(diagnosisAndComment) ? '' : diagnosisAndComment);
-        const joinedComment = appendCell(separated ? separated[2] : (/損傷/.test(diagnosisAndComment) ? diagnosisAndComment : ''), value(8));
+        // A blank diagnosis cell can cause the first comment text item to be
+        // assigned to column 7 by PDF text extraction. Only an actual
+        // I-IV/1-4 diagnosis token belongs here; every other value is comment.
+        const diagnosis = separated ? separated[1].toUpperCase() : '';
+        const joinedComment = appendCell(separated ? separated[2] : diagnosisAndComment, value(8));
         const row = { spanNumber, memberName: value(0), memberSymbol: value(1), memberNumber: value(2), damageType: value(3), damagePattern: value(4), classification: value(5), damageLevel: value(6), diagnosis, comment: joinedComment, pageNumber, source: '損傷程度の評価' };
         if (!row.memberNumber || !/[0-9]/.test(row.memberNumber) || !row.damageType) continue;
         row.damageNumbers = [...new Set(damageNumbers(row.comment))];
@@ -344,6 +347,11 @@
         state.assessmentFocusNumbers = numbers.map(String);
         state.assessmentFocusSpan = String(row.spanNumber || '');
         renderAssessmentList();
+        const elementPage = findElementPageForDamage(numbers, row.spanNumber || '');
+        if (elementPage && elementPage !== state.element.page) {
+          state.element.page = elementPage;
+          await renderSide('element');
+        }
         await jumpToDamage(numbers, row.spanNumber || null);
       });
       body.appendChild(tr);
@@ -362,6 +370,36 @@
     document.querySelectorAll('#elementViewer .hotspot').forEach(hotspot => damageNumbers(hotspot.dataset.label || '').forEach(number => result.add(number)));
     if (state.currentDamage?.elementPage === state.element.page && state.currentDamage.damageNumber) result.add(String(state.currentDamage.damageNumber));
     return result;
+  }
+  function highlightElementHotspots(numbers = state.hotspotFocusNumbers) {
+    const focused = new Set((numbers || []).map(number => String(Number(number))).filter(number => number !== 'NaN'));
+    document.querySelectorAll('#elementViewer .hotspot').forEach(hotspot => {
+      const stored = (hotspot.dataset.numbers || '').split(',').filter(Boolean).map(number => String(Number(number)));
+      const detected = stored.length ? stored : damageNumbers(hotspot.dataset.label || '').map(number => String(Number(number)));
+      hotspot.classList.toggle('selected', detected.some(number => focused.has(number)));
+    });
+  }
+  function elementDamageNumbersForPage(pageNumber) {
+    const result = new Set([...(state.textDamageNumbers.get(pageNumber) || [])].map(number => String(Number(number))));
+    const cached = state.ocrHotspots.get(pageNumber);
+    for (const hit of cached?.hits || []) for (const number of hit.numbers || [hit.number]) result.add(String(Number(number)));
+    for (const hotspot of state.manualHotspots.get(pageNumber) || []) {
+      for (const number of hotspot.numbers || [hotspot.number]) result.add(String(Number(number)));
+    }
+    return result;
+  }
+  function findElementPageForDamage(numbers, requestedSpan = '') {
+    if (!state.element.doc) return 0;
+    const wanted = new Set(numbers.map(number => String(Number(number))));
+    const span = String(requestedSpan || '');
+    let numberOnlyMatch = 0;
+    for (let pageNumber = 1; pageNumber <= state.element.doc.numPages; pageNumber++) {
+      if (![...elementDamageNumbersForPage(pageNumber)].some(number => wanted.has(number))) continue;
+      if (!numberOnlyMatch) numberOnlyMatch = pageNumber;
+      const pageSpan = String(state.elementSpanNumbers.get(pageNumber) || '');
+      if (!span || !pageSpan || pageSpan === span) return pageNumber;
+    }
+    return numberOnlyMatch;
   }
   let pendingDrawingRegistration = null;
   function closeDrawingRegistration() {
@@ -1108,6 +1146,7 @@
     // Rebuild the missing-number list now so already visible orange frames do
     // not remain incorrectly listed as unrecognized.
     if (!state.ocrProgress) auditRecognizedDamageNumbers();
+    highlightElementHotspots();
   }
   async function ensureOcrWorker() {
     if (state.ocrWorker) return state.ocrWorker;
@@ -2149,6 +2188,48 @@
       row.append(label, show); list.appendChild(row);
     }
   }
+  const PHOTO_LAYOUT_STORAGE_KEY = 'inspection-photo-pane-layout-v1';
+  function savePhotoPaneLayout() {
+    const pane = $('photoPane');
+    if (pane.classList.contains('hiddenPanel')) return;
+    if (pane.classList.contains('maximized')) {
+      try {
+        const previous = JSON.parse(localStorage.getItem(PHOTO_LAYOUT_STORAGE_KEY) || 'null');
+        if (previous) localStorage.setItem(PHOTO_LAYOUT_STORAGE_KEY, JSON.stringify({ ...previous, maximized: true }));
+      } catch (_) {}
+      return;
+    }
+    const rect = pane.getBoundingClientRect(), area = $('elementViewer').getBoundingClientRect();
+    if (!rect.width || !rect.height || !area.width || !area.height) return;
+    try {
+      localStorage.setItem(PHOTO_LAYOUT_STORAGE_KEY, JSON.stringify({
+        dockMode: state.photo.dockMode, width: Math.round(rect.width), height: Math.round(rect.height),
+        leftOffset: Math.round(rect.left - area.left), topOffset: Math.round(rect.top - area.top),
+        maximized: pane.classList.contains('maximized')
+      }));
+    } catch (_) {}
+  }
+  function restorePhotoPaneLayout() {
+    const pane = $('photoPane'), area = $('elementViewer').getBoundingClientRect();
+    if (!area.width || !area.height) return false;
+    let saved;
+    try { saved = JSON.parse(localStorage.getItem(PHOTO_LAYOUT_STORAGE_KEY) || 'null'); } catch (_) { return false; }
+    if (!saved || !['free', 'right', 'left'].includes(saved.dockMode)) return false;
+    state.photo.dockMode = saved.dockMode;
+    $('photoDockMode').textContent = ({ free: '位置：フリー', right: '位置：右', left: '位置：左' })[saved.dockMode];
+    pane.classList.toggle('maximized', Boolean(saved.maximized));
+    $('photoMaximize').setAttribute('aria-pressed', String(Boolean(saved.maximized)));
+    $('photoMaximize').textContent = saved.maximized ? '元サイズ' : '最大化';
+    const width = Math.max(320, Math.min(Number(saved.width) || 840, area.width - 12));
+    const height = Math.max(280, Math.min(Number(saved.height) || 590, area.height - 12));
+    pane.style.width = `${width}px`; pane.style.height = `${height}px`; pane.style.right = 'auto';
+    if (saved.dockMode === 'free') {
+      pane.style.left = `${Math.max(area.left, Math.min(area.left + (Number(saved.leftOffset) || 0), area.right - width))}px`;
+      pane.style.top = `${Math.max(area.top, Math.min(area.top + (Number(saved.topOffset) || 0), area.bottom - height))}px`;
+    }
+    applyPhotoDockLayout();
+    return true;
+  }
   function placePhotoPaneInViewer(reset = false) {
     const pane = $('photoPane'), area = $('elementViewer').getBoundingClientRect();
     if (!area.width || !area.height) return;
@@ -2201,10 +2282,13 @@
   function showPhotoPanel(render = true) {
     const wasHidden = $('photoPane').classList.contains('hiddenPanel');
     $('photoPane').classList.remove('hiddenPanel');
-    requestAnimationFrame(() => placePhotoPaneInViewer(wasHidden));
+    requestAnimationFrame(() => {
+      if (!(wasHidden && restorePhotoPaneLayout())) placePhotoPaneInViewer(wasHidden);
+      else placePhotoPaneInViewer(false);
+    });
     if (render) setTimeout(() => renderSide('photo'), 30);
   }
-  function hidePhotoPanel() { $('photoPane').classList.add('hiddenPanel'); applyPhotoDockLayout(); }
+  function hidePhotoPanel() { savePhotoPaneLayout(); $('photoPane').classList.add('hiddenPanel'); applyPhotoDockLayout(); }
   async function jumpToDamage(raw, requestedSpan = null) {
     const elementViewBeforePhoto = captureElementView();
     const numbers = (Array.isArray(raw) ? raw : [raw])
@@ -2212,10 +2296,9 @@
       .filter(number => number && number !== 'NaN');
     if (!numbers.length) return;
     const number = numbers[0];
+    state.hotspotFocusNumbers = [...numbers];
     $('damageInput').value = numbers.map(value => value.padStart(2, '0')).join(',');
-    document.querySelectorAll('#elementViewer .hotspot').forEach(hotspot => {
-      hotspot.classList.toggle('selected', numbers.some(value => damageNumbers(hotspot.dataset.label || '').includes(value)));
-    });
+    highlightElementHotspots(numbers);
     if (!state.photo.doc) { showPhotoPanel(false); $('matchStatus').textContent = '先に損傷写真PDFを選択してください'; await restoreElementView(elementViewBeforePhoto); return; }
     const currentSpan = requestedSpan === null
       ? String(state.elementSpanNumbers.get(state.element.page) || '')
@@ -2272,6 +2355,7 @@
       await renderSide('photo');
       placePhotoPaneInViewer(false);
       await restoreElementView(elementViewBeforePhoto);
+      highlightElementHotspots(numbers);
     } finally {
       pane.classList.remove('preparing');
     }
@@ -2859,6 +2943,7 @@
     await renderSide('photo');
   });
   $('photoMaximize').addEventListener('click', async event => {
+    if (!$('photoPane').classList.contains('maximized')) savePhotoPaneLayout();
     const maximized = $('photoPane').classList.toggle('maximized');
     applyPhotoDockLayout();
     // Wait until the element pane has regained the full work-area width,
@@ -2869,6 +2954,7 @@
     event.currentTarget.textContent = maximized ? '元サイズ' : '最大化';
     await renderElementPreservingView();
     await renderSide('photo');
+    savePhotoPaneLayout();
   });
   $('photoDockMode').addEventListener('click', async event => {
     const modes = ['free', 'right', 'left'];
@@ -2877,6 +2963,7 @@
     applyPhotoDockLayout();
     await renderElementPreservingView();
     await renderSide('photo');
+    savePhotoPaneLayout();
   });
   let photoDividerDrag = null;
   $('photoDockDivider').addEventListener('pointerdown', event => {
@@ -2897,7 +2984,7 @@
   const finishPhotoDividerDrag = async event => {
     if (!photoDividerDrag) return;
     photoDividerDrag = null; event.currentTarget.classList.remove('dragging');
-    await renderElementPreservingView(); await renderSide('photo');
+    await renderElementPreservingView(); await renderSide('photo'); savePhotoPaneLayout();
   };
   $('photoDockDivider').addEventListener('pointerup', finishPhotoDividerDrag);
   $('photoDockDivider').addEventListener('pointercancel', finishPhotoDividerDrag);
@@ -2915,7 +3002,9 @@
     pane.style.top = `${Math.max(area.top, Math.min(area.bottom - pane.offsetHeight, photoDrag.top + event.clientY - photoDrag.y))}px`;
     pane.style.right = 'auto';
   });
-  $('photoPane').querySelector('.paneHeader').addEventListener('pointerup', () => { photoDrag = null; });
+  const finishPhotoDrag = () => { if (photoDrag) savePhotoPaneLayout(); photoDrag = null; };
+  $('photoPane').querySelector('.paneHeader').addEventListener('pointerup', finishPhotoDrag);
+  $('photoPane').querySelector('.paneHeader').addEventListener('pointercancel', finishPhotoDrag);
   let photoResizeTimer = 0;
   let lastPhotoPaneSize = '';
   const photoResizeObserver = new ResizeObserver(entries => {
@@ -2936,6 +3025,7 @@
     photoResizeTimer = setTimeout(() => {
       if (state.photo.dockMode !== 'free') { applyPhotoDockLayout(); renderElementPreservingView(); }
       renderSide('photo');
+      savePhotoPaneLayout();
     }, 120);
   });
   photoResizeObserver.observe($('photoPane'));

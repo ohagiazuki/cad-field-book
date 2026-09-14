@@ -253,7 +253,8 @@ main.photoFloating #paneDivider { display: none; }
 .hotspot-outline { position: absolute; left: 50%; top: 50%; box-sizing: border-box; transform: translate(-50%, -50%); border: 2px solid #ff9800; border-radius: 5px; background: #fff4; pointer-events: none; }
 .hotspot::after { content: attr(data-label); position: absolute; left: 0; bottom: 100%; padding: 2px 5px; border-radius: 4px 4px 0 0; background: #ff8f00; color: white; font-size: 11px; white-space: nowrap; opacity: 0; }
 .hotspot:active::after { opacity: 1; }
-.hotspot.selected .hotspot-outline { border-color: #087fdb; background: #dbeeff88; }
+.hotspot.selected { z-index: 7; }
+.hotspot.selected .hotspot-outline { border-width: 3px; border-color: #ff3d00; background: #fff17688; box-shadow: 0 0 0 3px #fff, 0 0 12px 6px #ff9800cc; }
 .hotspot.editTarget .hotspot-outline { border-color: #d71920; background: #fff0a8aa; box-shadow: 0 0 0 2px white; }
 #hotspotEditMode[aria-pressed="true"] { background: #ff9800; border-color: #c56e00; color: white; }
 .hotspotEditor { position: fixed; z-index: 90; top: 56px; right: 10px; width: min(92vw, 330px); box-sizing: border-box; padding: 10px; border: 2px solid #ff9800; border-radius: 10px; background: #fffaf0; box-shadow: 0 8px 28px #0005; }
