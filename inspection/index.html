@@ -7,11 +7,11 @@
     // OCR uses Web Workers and WASM, which browsers block on file:// pages.
     // When this HTML is opened directly, switch to the local web server where
     // the exact same files can run with a normal HTTP origin.
-    if (location.protocol === 'file:') location.replace('http://127.0.0.1:8098/inspection/index.html?v=385');
+    if (location.protocol === 'file:') location.replace('http://127.0.0.1:8098/inspection/index.html?v=389');
   </script>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>点検モード | CAD野帳</title>
-  <link rel="stylesheet" href="inspection.css?v=385">
+  <link rel="stylesheet" href="inspection.css?v=389">
 </head>
 <body>
   <header>
@@ -75,16 +75,17 @@
   </aside>
   <aside id="recognitionResultPane" class="recognitionResultPane hiddenPanel" aria-label="損傷番号の確認結果"><div class="recognitionResultHeader"><strong>損傷番号の確認結果</strong><button id="recognitionResultClose">閉じる</button></div><p id="recognitionResultSummary"></p><div id="recognitionResultList"></div></aside>
   <aside id="hotspotEditor" class="hotspotEditor hiddenPanel" aria-label="オレンジ枠の編集"><div><strong>オレンジ枠を編集</strong><button id="hotspotEditorClose">閉じる</button></div><label>損傷番号<input id="hotspotNumberInput" inputmode="numeric" placeholder="例：01 または 16,17"></label><p>枠の移動は、図面上のオレンジ枠をドラッグします。</p><div class="hotspotEditorActions"><button id="hotspotNumberSave">番号を修正</button><button id="hotspotDelete" class="dangerButton">枠を削除</button></div></aside>
-  <div id="annotationMiniMenu" class="annotationMiniMenu hiddenPanel"><span id="annotationSelectionCount">1個</span><button id="annotationCopy">コピー</button><button id="annotationShrink">縮小</button><button id="annotationGrow">拡大</button><button id="annotationDelete" class="dangerButton">消去</button></div>
+  <div id="annotationMiniMenu" class="annotationMiniMenu hiddenPanel"><span id="annotationSelectionCount">1個</span><button id="annotationDamageInfo">損傷情報登録</button><button id="annotationCopy">コピー</button><button id="annotationShrink">縮小</button><button id="annotationGrow">拡大</button><button id="annotationDelete" class="dangerButton">消去</button></div>
   <div id="hotspotAddDialog" class="drawingInfoBackdrop hiddenPanel" role="dialog" aria-modal="true" aria-label="オレンジ枠を追加"><section class="hotspotAddCard"><strong>オレンジ枠を追加</strong><label>径間番号<input id="addHotspotSpan" inputmode="numeric" placeholder="例：1"></label><label>損傷番号<input id="addHotspotNumber" inputmode="numeric" placeholder="例：01 または 16,17"></label><p>登録後、表示中の要素番号図で枠の位置をタップします。</p><div><button id="addHotspotCancel">取消</button><button id="addHotspotStart">位置を指定</button></div></section></div>
   <div id="drawingInfoDialog" class="drawingInfoBackdrop hiddenPanel" role="dialog" aria-modal="true" aria-label="作図情報の登録">
-    <section class="drawingInfoCard"><div class="drawingInfoHeader"><strong>作図情報を登録</strong><button id="drawingInfoClose">閉じる</button></div><p>表示中の要素番号図にある損傷番号と、評価表のコメントが一致する行です。</p><div id="drawingCandidateList" class="drawingCandidateList"></div><button id="drawingInfoNone" class="drawingInfoNone">情報を付けずに登録</button></section>
+    <section class="drawingInfoCard"><div class="drawingInfoHeader"><strong>損傷情報を登録</strong><button id="drawingInfoClose">閉じる</button></div><p>過年度評価一覧から、選択中の作図へコピーする損傷情報を選んでください。</p><div id="drawingCandidateList" class="drawingCandidateList"></div><button id="drawingInfoNone" class="drawingInfoNone">損傷情報を解除</button></section>
   </div>
   <div id="numberKeypad" class="drawingInfoBackdrop hiddenPanel" role="dialog" aria-modal="true" aria-label="写真番号入力">
     <section class="numberKeypadCard"><strong>写真番号を入力</strong><input id="boxedNumberInput" type="text" inputmode="none" readonly placeholder="例：1－2"><div class="numberKeys"><button data-number-key="1">1</button><button data-number-key="2">2</button><button data-number-key="3">3</button><button data-number-key="4">4</button><button data-number-key="5">5</button><button data-number-key="6">6</button><button data-number-key="7">7</button><button data-number-key="8">8</button><button data-number-key="9">9</button><button data-number-key="－">－</button><button data-number-key="0">0</button><button data-number-key="back">⌫</button></div><div class="numberKeypadActions"><button id="numberKeypadCancel">取消</button><button id="numberKeypadOk">OK</button></div></section>
   </div>
+  <div id="pastPhotoImportDialog" class="drawingInfoBackdrop hiddenPanel" role="dialog" aria-modal="true" aria-label="前回写真の切り取り確認"><section class="pastPhotoImportCard"><div class="drawingInfoHeader"><strong>前回写真の切り取り確認</strong><button id="pastPhotoImportClose">閉じる</button></div><p id="pastPhotoImportStatus">オレンジ枠内が取り込まれます。</p><div id="pastPhotoImportList" class="pastPhotoImportList"></div></section></div>
   <script src="../pdfjs/pdf.min.js"></script>
   <script src="../tesseract/tesseract.min.js"></script>
-  <script src="inspection.js?v=385"></script>
+  <script src="inspection.js?v=389"></script>
 </body>
 </html>

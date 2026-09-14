@@ -353,6 +353,7 @@
           await renderSide('element');
         }
         await jumpToDamage(numbers, row.spanNumber || null);
+        if (state.element.zoom > 1.001) await centerElementHotspot(numbers);
       });
       body.appendChild(tr);
     }
@@ -377,6 +378,30 @@
       const stored = (hotspot.dataset.numbers || '').split(',').filter(Boolean).map(number => String(Number(number)));
       const detected = stored.length ? stored : damageNumbers(hotspot.dataset.label || '').map(number => String(Number(number)));
       hotspot.classList.toggle('selected', detected.some(number => focused.has(number)));
+    });
+  }
+  async function centerElementHotspot(numbers) {
+    const wanted = new Set(numbers.map(number => String(Number(number))));
+    const viewer = $('elementViewer');
+    let hotspot = null;
+    // Text/OCR frames are added after the PDF canvas. Allow that asynchronous
+    // pass to finish when the assessment click also changed the element page.
+    for (let attempt = 0; attempt < 15 && !hotspot; attempt++) {
+      hotspot = [...viewer.querySelectorAll('.hotspot')].find(item => {
+        const stored = (item.dataset.numbers || '').split(',').filter(Boolean).map(number => String(Number(number)));
+        const detected = stored.length ? stored : damageNumbers(item.dataset.label || '').map(number => String(Number(number)));
+        return detected.some(number => wanted.has(number));
+      }) || null;
+      if (!hotspot) await new Promise(resolve => setTimeout(resolve, 60));
+    }
+    if (!hotspot) return;
+    hotspot.classList.add('selected');
+    const wrap = hotspot.closest('.pageWrap');
+    if (!wrap) return;
+    viewer.scrollTo({
+      left: Math.max(0, wrap.offsetLeft + hotspot.offsetLeft + hotspot.offsetWidth / 2 - viewer.clientWidth / 2),
+      top: Math.max(0, wrap.offsetTop + hotspot.offsetTop + hotspot.offsetHeight / 2 - viewer.clientHeight / 2),
+      behavior: 'smooth'
     });
   }
   function elementDamageNumbersForPage(pageNumber) {
@@ -406,28 +431,31 @@
     pendingDrawingRegistration = null;
     $('drawingInfoDialog').classList.add('hiddenPanel');
   }
-  function attachAssessmentToDrawing(item, row) {
+  function attachAssessmentToDrawing(itemOrItems, row) {
+    const items = Array.isArray(itemOrItems) ? itemOrItems : [itemOrItems];
     const visible = visibleElementDamageNumbers();
     const matches = (row.damageNumbers || []).filter(number => visible.has(number));
     const current = String(state.currentDamage?.damageNumber || '');
     const damageNumber = matches.includes(current) ? current : (matches[0] || row.damageNumbers?.[0] || current);
     const photoEntries = state.photoIndex.get(String(damageNumber)) || [];
     const sourceRecords = photoEntries.length ? photoEntries.map(entry => entry.record || {}) : [{}];
-    item.damageInfo = {
-      damageNumber: String(damageNumber || ''), elementPage: state.element.page,
-      records: sourceRecords.map(source => ({ ...source,
-        damageNumber: String(damageNumber || source.damageNumber || ''), spanNumber: row.spanNumber || source.spanNumber || '',
-        memberName: row.memberName || source.memberName || '', memberSymbol: row.memberSymbol || source.memberSymbol || '',
-        memberNumber: row.memberNumber || source.memberNumber || '', damageType: row.damageType || source.damageType || '',
-        damagePattern: row.damagePattern || source.damagePattern || '', classification: row.classification || source.classification || '', damageLevel: row.damageLevel || source.damageLevel || '', diagnosis: row.diagnosis || source.diagnosis || '', memo: row.comment || source.memo || '', assessmentPage: row.pageNumber
-      }))
-    };
+    for (const item of items) item.damageInfo = {
+        damageNumber: String(damageNumber || ''), elementPage: state.element.page,
+        records: sourceRecords.map(source => ({ ...source,
+          damageNumber: String(damageNumber || source.damageNumber || ''), spanNumber: row.spanNumber || source.spanNumber || '',
+          memberName: row.memberName || source.memberName || '', memberSymbol: row.memberSymbol || source.memberSymbol || '',
+          memberNumber: row.memberNumber || source.memberNumber || '', damageType: row.damageType || source.damageType || '',
+          damagePattern: row.damagePattern || source.damagePattern || '', classification: row.classification || source.classification || '', damageLevel: row.damageLevel || source.damageLevel || '', diagnosis: row.diagnosis || source.diagnosis || '', memo: row.comment || source.memo || '', assessmentPage: row.pageNumber
+        }))
+      };
     closeDrawingRegistration();
     if (!$('damageListPane').classList.contains('hiddenPanel')) renderDamageList();
-    $('globalStatus').textContent = `作図に損傷${String(damageNumber).padStart(2, '0')}の評価情報を登録しました`;
+    $('globalStatus').textContent = `${items.length}個の作図に損傷${String(damageNumber).padStart(2, '0')}の評価情報を登録しました`;
   }
-  function showDrawingRegistration(item) {
-    pendingDrawingRegistration = item;
+  function showDrawingRegistration(itemOrItems) {
+    const items = (Array.isArray(itemOrItems) ? itemOrItems : [itemOrItems]).filter(Boolean);
+    if (!items.length) return;
+    pendingDrawingRegistration = items;
     const visible = visibleElementDamageNumbers();
     const current = String(state.currentDamage?.damageNumber || '');
     const candidates = state.assessmentRows.filter(row => (row.damageNumbers || []).some(number => visible.has(number)))
@@ -442,7 +470,7 @@
       const button = document.createElement('button'); button.className = 'drawingCandidate';
       const matching = (row.damageNumbers || []).filter(number => visible.has(number));
       button.innerHTML = `<strong>損傷${escapeHtml(matching.map(number => number.padStart(2, '0')).join('・'))}　${escapeHtml(row.memberName)} ${escapeHtml(row.memberSymbol)} ${escapeHtml(row.memberNumber)}</strong><span>${escapeHtml(row.damageType)}${row.damagePattern ? `　パターン ${escapeHtml(row.damagePattern)}` : ''}${row.classification ? `　分類 ${escapeHtml(row.classification)}` : ''}${row.damageLevel ? `　程度 ${escapeHtml(row.damageLevel)}` : ''}${row.diagnosis ? `　診断 ${escapeHtml(row.diagnosis)}` : ''}</span><small>${escapeHtml(row.comment)}</small>`;
-      button.addEventListener('click', () => attachAssessmentToDrawing(item, row));
+      button.addEventListener('click', () => attachAssessmentToDrawing(items, row));
       list.appendChild(button);
     }
     $('drawingInfoDialog').classList.remove('hiddenPanel');
@@ -552,6 +580,74 @@
     const topRatio = focus.row ? .55 : .275;
     const heightRatio = focus.row ? .315 : .295;
     return { x: focus.column * base.width / 2, y: base.height * topRatio, width: base.width / 2, height: base.height * heightRatio };
+  }
+  async function renderPastPhotoRecord(entry) {
+    const page = await state.photo.doc.getPage(entry.page);
+    const base = page.getViewport({ scale: 1 });
+    const crop = photoRecordCrop(base, entry.focus);
+    const scale = Math.min(3, Math.max(1.6, 1200 / crop.width));
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.ceil(crop.width * scale); canvas.height = Math.ceil(crop.height * scale);
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport, transform: [1, 0, 0, 1, -crop.x * scale, -crop.y * scale] }).promise;
+    return canvas;
+  }
+  function addPastPhotoCropEditor(card, canvas, entry, row, photoIndex) {
+    const editor = document.createElement('div'); editor.className = 'pastPhotoCropEditor'; editor.appendChild(canvas);
+    const box = document.createElement('div'); box.className = 'pastPhotoCropBox'; editor.appendChild(box);
+    const initial = { x: 0, y: .015, width: .675, height: .97 };
+    const saved = entry.record?.previousCrop || initial;
+    let crop = { ...saved };
+    const draw = () => { box.style.left = `${crop.x * 100}%`; box.style.top = `${crop.y * 100}%`; box.style.width = `${crop.width * 100}%`; box.style.height = `${crop.height * 100}%`; };
+    ['nw','n','ne','e','se','s','sw','w'].forEach(name => { const handle = document.createElement('i'); handle.className = 'pastPhotoCropHandle'; handle.dataset.handle = name; box.appendChild(handle); });
+    box.addEventListener('pointerdown', event => {
+      event.preventDefault(); event.stopPropagation(); box.setPointerCapture(event.pointerId);
+      const bounds = editor.getBoundingClientRect(), start = { x: event.clientX, y: event.clientY, crop: { ...crop } };
+      const handle = event.target.dataset.handle || 'move';
+      const move = moveEvent => {
+        const dx = (moveEvent.clientX - start.x) / bounds.width, dy = (moveEvent.clientY - start.y) / bounds.height;
+        let { x, y, width, height } = start.crop;
+        if (handle === 'move') { x += dx; y += dy; }
+        else {
+          if (handle.includes('w')) { x += dx; width -= dx; } if (handle.includes('e')) width += dx;
+          if (handle.includes('n')) { y += dy; height -= dy; } if (handle.includes('s')) height += dy;
+        }
+        width = Math.max(.08, Math.min(1, width)); height = Math.max(.08, Math.min(1, height));
+        x = Math.max(0, Math.min(1 - width, x)); y = Math.max(0, Math.min(1 - height, y));
+        crop = { x, y, width, height }; draw();
+      };
+      const end = () => { box.removeEventListener('pointermove', move); box.removeEventListener('pointerup', end); box.removeEventListener('pointercancel', end); };
+      box.addEventListener('pointermove', move); box.addEventListener('pointerup', end); box.addEventListener('pointercancel', end);
+    });
+    draw(); card.appendChild(editor);
+    const actions = document.createElement('div'); actions.className = 'pastPhotoCandidateActions';
+    const reset = document.createElement('button'); reset.textContent = '初期位置に戻す'; reset.addEventListener('click', () => { crop = { ...initial }; draw(); });
+    const take = document.createElement('button'); take.className = 'pastPhotoTake'; take.textContent = `写真${photoIndex + 1}へ取り込む`;
+    take.addEventListener('click', () => {
+      const output = document.createElement('canvas'); output.width = Math.max(1, Math.round(canvas.width * crop.width)); output.height = Math.max(1, Math.round(canvas.height * crop.height));
+      output.getContext('2d').drawImage(canvas, canvas.width * crop.x, canvas.height * crop.y, output.width, output.height, 0, 0, output.width, output.height);
+      entry.record && (entry.record.previousCrop = { ...crop });
+      row.photos[photoIndex].previousPhoto = { dataUrl: output.toDataURL('image/jpeg', .9), sourcePage: entry.page, sourcePhotoNumber: entry.record?.photoNumber || '', crop: { ...crop } };
+      row.photos[photoIndex].memo = '「損傷〇〇」の前回写真';
+      $('pastPhotoImportDialog').classList.add('hiddenPanel'); renderDamageList();
+      $('globalStatus').textContent = `切り取った前回写真を写真${photoIndex + 1}へ取り込みました`;
+    });
+    actions.append(reset, take); card.appendChild(actions);
+  }
+  async function showPastPhotoImport(row, photoIndex) {
+    const list = $('pastPhotoImportList'); list.replaceChildren(); $('pastPhotoImportDialog').classList.remove('hiddenPanel');
+    if (!state.photo.doc) { list.innerHTML = '<div class="drawingCandidateEmpty">先に過年度の損傷写真PDFを読み込んでください。</div>'; return; }
+    const number = String(Number(normalizeDigits(String(row.damageNumber)).replace(/\D/g, '')));
+    const span = normalizeDigits(String(row.spanNumber || '')).replace(/[^0-9A-Za-z_-]/g, '');
+    const entries = [...new Map((state.photoIndex.get(number) || []).filter(entry => !span || !entry.record?.spanNumber || String(entry.record.spanNumber) === span).map(entry => [`${entry.page}:${entry.focus.column}:${entry.focus.row}`, entry])).values()];
+    if (!entries.length) { list.innerHTML = '<div class="drawingCandidateEmpty">この損傷に対応する過年度写真がありません。</div>'; return; }
+    for (const entry of entries) {
+      const card = document.createElement('article'); card.className = 'pastPhotoCandidate';
+      const title = document.createElement('strong'); title.textContent = `過年度 写真${entry.record?.photoNumber || '―'}　損傷${String(row.damageNumber).padStart(2, '0')}`; card.appendChild(title);
+      try { addPastPhotoCropEditor(card, await renderPastPhotoRecord(entry), entry, row, photoIndex); }
+      catch (_) { card.append('切り取りプレビューを表示できませんでした。'); }
+      list.appendChild(card);
+    }
   }
   function trimCanvasWhitespace(canvas, dpr) {
     const context = canvas.getContext('2d', { willReadFrequently: true });
@@ -749,7 +845,8 @@
     state.annotationCopyArmed = false;
     const menu = $('annotationMiniMenu'); menu.classList.remove('hiddenPanel');
     $('annotationSelectionCount').textContent = `${state.selectedAnnotation.selections.length}個`;
-    const width = 300, height = 42;
+    $('annotationDamageInfo').classList.toggle('hiddenPanel', side !== 'element');
+    const width = menu.offsetWidth || 430, height = menu.offsetHeight || 42;
     menu.style.left = `${Math.max(4, Math.min(innerWidth - width - 4, event.clientX + 32))}px`;
     menu.style.top = `${Math.max(4, Math.min(innerHeight - height - 4, event.clientY + 36))}px`;
   }
@@ -965,24 +1062,22 @@
           // On photographs, commit the 300% font size at creation time. This
           // avoids depending on a later redraw to enlarge the number.
           if (side === 'photo') style.fontSize *= 9;
-          const item = { id: annotationId(), type: 'boxedNumber', x1: p.x, y1: p.y, text: value, ...style, photoNumberTripleSize: side === 'photo', photoNumberScaleApplied: side === 'photo' ? 9 : undefined, damageInfo: annotationMetadata() };
+          const item = { id: annotationId(), type: 'boxedNumber', x1: p.x, y1: p.y, text: value, ...style, photoNumberTripleSize: side === 'photo', photoNumberScaleApplied: side === 'photo' ? 9 : undefined, damageInfo: side === 'element' ? null : annotationMetadata() };
           annotationList(pageNumber, side).push(item);
           if (side === 'photo') mirrorPhotoRecordAnnotation(wrap, pageNumber, item);
           renderSide(side);
           if (side === 'element' && !$('damageListPane').classList.contains('hiddenPanel')) renderDamageList();
-          if (side === 'element') showDrawingRegistration(item);
         }
         return;
       }
       if (state.drawMode === 'text') {
         const value = prompt('文字を入力してください', '');
         if (value) {
-          const item = { id: annotationId(), type: 'text', x1: p.x, y1: p.y, text: value, ...drawingStyle(), damageInfo: annotationMetadata() };
+          const item = { id: annotationId(), type: 'text', x1: p.x, y1: p.y, text: value, ...drawingStyle(), damageInfo: side === 'element' ? null : annotationMetadata() };
           annotationList(pageNumber, side).push(item);
           if (side === 'photo') mirrorPhotoRecordAnnotation(wrap, pageNumber, item);
           renderSide(side);
           if (side === 'element' && !$('damageListPane').classList.contains('hiddenPanel')) renderDamageList();
-          if (side === 'element') showDrawingRegistration(item);
         }
         return;
       }
@@ -1031,7 +1126,7 @@
         }
         return;
       }
-      const item = { id: annotationId(), type: state.drawMode, x1: start.x, y1: start.y, x2: p.x, y2: p.y, ...drawingStyle(), damageInfo: annotationMetadata() };
+      const item = { id: annotationId(), type: state.drawMode, x1: start.x, y1: start.y, x2: p.x, y2: p.y, ...drawingStyle(), damageInfo: side === 'element' ? null : annotationMetadata() };
       if (state.drawMode === 'free') item.points = freePoints?.length > 1 ? freePoints : [start, p];
       if (state.drawMode === 'leader') {
         item.x3 = p.x + (p.x >= start.x ? 120 : -120);
@@ -1051,7 +1146,6 @@
       start = null; preview = null; freePoints = null;
       renderSide(side);
       if (side === 'element' && !$('damageListPane').classList.contains('hiddenPanel')) renderDamageList();
-      if (side === 'element') showDrawingRegistration(item);
     });
     wrap.appendChild(svg);
     // Zooming redraws the PDF and replaces its SVG layer. Restore the active
@@ -2469,7 +2563,6 @@
         viewer.scrollTop += actualY - wantedY;
       }
     };
-    const afterLayout = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const clearPreview = () => {
       for (const page of viewer.querySelectorAll('.pageWrap')) {
         page.style.transform = '';
@@ -2504,9 +2597,11 @@
     const finishPinch = async event => {
       if (!pinchStartDistance || event.touches.length > 1) return;
       pinchStartDistance = 0;
-      clearPreview();
+      // Keep the live CSS-scaled preview visible while the sharp PDF canvas
+      // is rendered off-DOM. Restore the anchor immediately after the swap so
+      // Safari never paints the new canvas at scroll position 0,0.
       await renderSide(side);
-      await afterLayout();
+      clearPreview();
       await restoreAnchor(pinchAnchor);
       pinchAnchor = null;
     };
@@ -2522,7 +2617,6 @@
       clearTimeout(wheelTimer);
       wheelTimer = setTimeout(async () => {
         await renderSide(side);
-        await afterLayout();
         await restoreAnchor(anchor);
       }, 90);
     }, { passive: false });
@@ -2531,7 +2625,6 @@
       const anchor = captureAnchor(event.clientX, event.clientY);
       target.zoom = target.zoom > 1.05 ? 1 : 2.5;
       await renderSide(side);
-      await afterLayout();
       await restoreAnchor(anchor);
       event.preventDefault();
     });
@@ -2681,6 +2774,7 @@
         for (const photoField of ['number', 'memo']) {
           const td = document.createElement('td');
           if (photoField === 'number') {
+            const wrap = document.createElement('div'); wrap.className = 'inspectionPhotoNumberWrap';
             const input = document.createElement('input');
             input.className = 'inspectionPhotoNumberInput'; input.type = 'text'; input.inputMode = 'numeric';
             input.pattern = '[0-9]*'; input.value = photo.number || ''; input.placeholder = '番号';
@@ -2688,7 +2782,15 @@
             input.addEventListener('input', () => { input.value = normalizeDigits(input.value).replace(/[^0-9]/g, ''); });
             input.addEventListener('change', () => updateInspectionResultCell(row, '', input.value, photoIndex, 'number'));
             input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); input.blur(); } });
-            td.appendChild(input);
+            wrap.appendChild(input);
+            if (photoIndex === 1) {
+              const importButton = document.createElement('button'); importButton.type = 'button';
+              importButton.className = `pastPhotoImportButton${photo.previousPhoto ? ' pastPhotoImported' : ''}`;
+              importButton.textContent = photo.previousPhoto ? '前回写真✓' : '前回写真';
+              importButton.addEventListener('click', event => { event.stopPropagation(); showPastPhotoImport(row, photoIndex); });
+              wrap.appendChild(importButton);
+            }
+            td.appendChild(wrap);
           } else {
             td.textContent = photo.memo || '';
             makeResultCellEditable(td, value => updateInspectionResultCell(row, '', value, photoIndex, 'memo'));
@@ -2887,10 +2989,10 @@
   $('assessmentListClose').addEventListener('click', () => { $('assessmentListPane').classList.add('hiddenPanel'); refitAfterTopPanelChange(); });
   $('drawingInfoClose').addEventListener('click', closeDrawingRegistration);
   $('drawingInfoNone').addEventListener('click', () => {
-    if (pendingDrawingRegistration) pendingDrawingRegistration.damageInfo = null;
+    for (const item of pendingDrawingRegistration || []) item.damageInfo = null;
     closeDrawingRegistration();
     if (!$('damageListPane').classList.contains('hiddenPanel')) renderDamageList();
-    $('globalStatus').textContent = '作図を情報なしで登録しました';
+    $('globalStatus').textContent = '選択した作図の損傷情報を解除しました';
   });
   document.querySelectorAll('[data-draw-color]').forEach(button => button.addEventListener('click', () => {
     $('drawColor').value = button.dataset.drawColor;
@@ -3071,6 +3173,15 @@
   });
   $('elementViewer').addEventListener('pointerdown', () => setDrawingSide('element'), true);
   $('photoViewer').addEventListener('pointerdown', () => setDrawingSide('photo'), true);
+  $('annotationDamageInfo').addEventListener('click', () => {
+    const selected = state.selectedAnnotation;
+    if (!selected || selected.side !== 'element') return;
+    const items = (selected.selections || [selected])
+      .map(selection => annotationList(selection.key, selection.side)[selection.index])
+      .filter(Boolean);
+    $('annotationMiniMenu').classList.add('hiddenPanel');
+    showDrawingRegistration(items);
+  });
   $('annotationCopy').addEventListener('click', () => {
     if (!state.selectedAnnotation) return;
     state.annotationCopyArmed = true;
@@ -3184,6 +3295,8 @@
       : `${state.drawingSide === 'photo' ? '損傷写真' : '要素番号図'} 作図：${activeButton?.getAttribute('aria-label') || activeButton?.textContent || ''}`;
   }));
   $('backButton').addEventListener('click', () => { location.href = '../?mode=draw'; });
+  $('pastPhotoImportClose').addEventListener('click', () => $('pastPhotoImportDialog').classList.add('hiddenPanel'));
+  $('pastPhotoImportDialog').addEventListener('click', event => { if (event.target === $('pastPhotoImportDialog')) $('pastPhotoImportDialog').classList.add('hiddenPanel'); });
   const updateNetworkStatus = () => {
     const online = navigator.onLine;
     $('networkStatus').textContent = online ? 'オンライン' : 'オフライン';

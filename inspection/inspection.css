@@ -138,6 +138,10 @@ main.photoFloating #paneDivider { display: none; }
 .inspectionResultTable .resultColPhotoMemo { width: 160px; }
 .inspectionPhotoNumberInput { box-sizing: border-box; width: 100%; min-width: 0; padding: 5px 3px; border: 1px solid #8ba0a7; border-radius: 4px; background: #fff; text-align: center; font: inherit; }
 .inspectionPhotoNumberInput:focus { outline: 2px solid #e07800; background: #fff0a8; }
+.inspectionPhotoNumberWrap { display: flex; align-items: center; gap: 3px; }
+.inspectionPhotoNumberWrap .inspectionPhotoNumberInput { min-width: 32px; }
+.pastPhotoImportButton { flex: none; padding: 5px; border-color: #d27a00; color: #8a4b00; font-size: 10px; white-space: nowrap; }
+.pastPhotoImportButton.pastPhotoImported { background: #fff0a8; }
 .assessmentResultTable { table-layout: fixed !important; width: 1440px !important; min-width: 100%; }
 .assessmentResultTable .assessmentColSpan { width: 55px; }
 .assessmentResultTable .assessmentColMember { width: 110px; }
@@ -184,6 +188,17 @@ main.photoFloating #paneDivider { display: none; }
 .drawingCandidate small { margin-top: 3px; color: #536c74; font-weight: 500; }
 .drawingCandidateEmpty { padding: 22px; text-align: center; color: #60777f; background: #f1f6f7; border-radius: 8px; }
 .drawingInfoNone { margin-top: 9px; align-self: flex-end; }
+.pastPhotoImportCard { width: min(95vw, 980px); max-height: 94vh; display: flex; flex-direction: column; gap: 8px; padding: 12px; overflow: hidden; border-radius: 12px; background: white; box-shadow: 0 12px 40px #0008; }
+.pastPhotoImportCard > p { margin: 0; color: #526a72; font-size: 13px; }
+.pastPhotoImportList { min-height: 180px; overflow: auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
+.pastPhotoCandidate { display: flex; flex-direction: column; gap: 7px; padding: 8px; border: 1px solid #9fb3ba; border-radius: 9px; background: #f5fafb; }
+.pastPhotoCropEditor { position: relative; width: 100%; touch-action: none; background: white; }
+.pastPhotoCropEditor canvas { display: block; width: 100%; height: auto; border: 1px solid #78909a; }
+.pastPhotoCropBox { position: absolute; border: 3px solid #ff8500; background: #ff850012; box-shadow: 0 0 0 9999px #10252c44; cursor: move; }
+.pastPhotoCropHandle { position: absolute; width: 13px; height: 13px; margin: -6.5px; border: 2px solid white; border-radius: 50%; background: #ff8500; box-shadow: 0 1px 3px #0008; }
+.pastPhotoCropHandle[data-handle="nw"] { left:0;top:0 }.pastPhotoCropHandle[data-handle="n"] { left:50%;top:0 }.pastPhotoCropHandle[data-handle="ne"] { left:100%;top:0 }.pastPhotoCropHandle[data-handle="e"] { left:100%;top:50% }.pastPhotoCropHandle[data-handle="se"] { left:100%;top:100% }.pastPhotoCropHandle[data-handle="s"] { left:50%;top:100% }.pastPhotoCropHandle[data-handle="sw"] { left:0;top:100% }.pastPhotoCropHandle[data-handle="w"] { left:0;top:50% }
+.pastPhotoCandidateActions { display: flex; justify-content: flex-end; gap: 6px; }
+.pastPhotoTake { background: #087f8c; color: white; }
 .recognitionResultPane { position: fixed; z-index: 45; top: 52px; right: 8px; width: min(92vw, 430px); max-height: 70vh; padding: 10px; overflow: auto; border: 1px solid #d48300; border-radius: 10px; background: #fffaf0; box-shadow: 0 8px 30px #0006; }
 .recognitionResultHeader { display: flex; align-items: center; gap: 8px; }
 .recognitionResultHeader strong { margin-right: auto; color: #9a5200; }
@@ -224,6 +239,7 @@ main.photoFloating #paneDivider { display: none; }
 .annotationLayer .selectableAnnotation.selectedAnnotation { filter: drop-shadow(0 0 3px #00a6ff); stroke: #087fdb !important; }
 .annotationMiniMenu { position: fixed; z-index: 70; display: flex; align-items: center; gap: 3px; padding: 4px; border: 1px solid #78909a; border-radius: 9px; background: white; box-shadow: 0 5px 18px #0005; }
 .annotationMiniMenu button { padding: 6px 9px; font-size: 12px; }
+.annotationMiniMenu #annotationDamageInfo { border-color: #087f8c; background: #e3f5f7; color: #075d68; font-weight: 800; }
 .annotationMiniMenu span { padding: 0 5px; color: #45616a; font-size: 12px; font-weight: 800; white-space: nowrap; }
 .selectionMarquee { fill: #039be522 !important; stroke: #039be5 !important; stroke-width: 2 !important; stroke-dasharray: 7 4; }
 .selectionControls { touch-action: none; }
