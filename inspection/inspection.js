@@ -1278,6 +1278,7 @@
     }
     let drag = null;
     button.addEventListener('pointerdown', event => {
+      if (!state.hotspotEditMode) return;
       drag = { x: event.clientX, y: event.clientY, left: button.offsetLeft, top: button.offsetTop, moved: false };
       button.setPointerCapture(event.pointerId); event.stopPropagation();
     });
@@ -2779,6 +2780,7 @@
   });
   $('hotspotEditMode').addEventListener('click', event => {
     state.hotspotEditMode = !state.hotspotEditMode;
+    $('elementViewer').classList.toggle('hotspotEditing', state.hotspotEditMode);
     event.currentTarget.setAttribute('aria-pressed', String(state.hotspotEditMode));
     event.currentTarget.textContent = state.hotspotEditMode ? '枠編集：入' : '枠編集';
     if (!state.hotspotEditMode) closeHotspotEditor();
@@ -2988,6 +2990,29 @@
   };
   $('photoDockDivider').addEventListener('pointerup', finishPhotoDividerDrag);
   $('photoDockDivider').addEventListener('pointercancel', finishPhotoDividerDrag);
+  let photoHandleResize = null;
+  $('photoResizeHandle').addEventListener('pointerdown', event => {
+    if (state.photo.dockMode !== 'free' || $('photoPane').classList.contains('maximized')) return;
+    const rect = $('photoPane').getBoundingClientRect();
+    photoHandleResize = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, width: rect.width, height: rect.height };
+    event.currentTarget.setPointerCapture(event.pointerId); event.preventDefault(); event.stopPropagation();
+  });
+  $('photoResizeHandle').addEventListener('pointermove', event => {
+    if (!photoHandleResize || event.pointerId !== photoHandleResize.pointerId) return;
+    const pane = $('photoPane'), area = $('elementViewer').getBoundingClientRect();
+    const maxWidth = Math.max(320, area.right - pane.getBoundingClientRect().left);
+    const maxHeight = Math.max(280, area.bottom - pane.getBoundingClientRect().top);
+    pane.style.width = `${Math.max(320, Math.min(maxWidth, photoHandleResize.width + event.clientX - photoHandleResize.x))}px`;
+    pane.style.height = `${Math.max(280, Math.min(maxHeight, photoHandleResize.height + event.clientY - photoHandleResize.y))}px`;
+    state.photo.keepPaneHeight = true;
+    event.preventDefault(); event.stopPropagation();
+  });
+  const finishPhotoHandleResize = event => {
+    if (!photoHandleResize || event.pointerId !== photoHandleResize.pointerId) return;
+    photoHandleResize = null; savePhotoPaneLayout(); renderSide('photo'); event.preventDefault(); event.stopPropagation();
+  };
+  $('photoResizeHandle').addEventListener('pointerup', finishPhotoHandleResize);
+  $('photoResizeHandle').addEventListener('pointercancel', finishPhotoHandleResize);
   let photoDrag = null;
   $('photoPane').querySelector('.paneHeader').addEventListener('pointerdown', event => {
     if (!$('photoPane').classList.contains('floating') || state.photo.dockMode !== 'free' || event.target.closest('button, label, input')) return;

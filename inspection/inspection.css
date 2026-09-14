@@ -88,6 +88,9 @@ main.photoFloating #paneDivider { display: none; }
 .pane.floating.photoCountMany { width: min(72vw, 980px); height: min(90vh, 900px); }
 .pane.floating.preparing { visibility: hidden; }
 .pane.floating.docked { resize: horizontal; box-shadow: 0 4px 18px #0005; }
+.photoResizeHandle { position: absolute; z-index: 12; right: 0; bottom: 0; width: 34px; height: 34px; cursor: nwse-resize; touch-action: none; border-radius: 10px 0 0 0; background: linear-gradient(135deg, transparent 38%, #087f8c 39% 47%, transparent 48% 58%, #087f8c 59% 67%, transparent 68%); }
+.photoResizeHandle:active { background-color: #8ed5dd88; }
+.pane.floating.docked .photoResizeHandle, .pane.floating.maximized .photoResizeHandle { display: none; }
 .pane.floating.docked #photoViewer.matchedPhotos { flex-direction: column; align-items: center; justify-content: flex-start; overflow-y: auto; }
 .pane.floating.docked .paneHeader button, .pane.floating.docked .jumpBar button, .pane.floating.docked .jumpBar label { white-space: nowrap; }
 #photoPane .paneHeader { display: grid; grid-template-columns: repeat(4, max-content); align-content: center; justify-content: start; gap: 4px; overflow: hidden; }
@@ -157,8 +160,10 @@ main.photoFloating #paneDivider { display: none; }
 .assessmentListPane { top: 54px; left: 8px; right: 8px; bottom: 8px; width: auto; height: auto; z-index: 40; resize: none; }
 .damageListPane.topDocked { position: relative; z-index: 18; flex: 0 0 170px; left: auto; right: auto; top: auto; bottom: auto; width: 100%; height: 170px; min-width: 0; min-height: 72px; max-width: none; max-height: 45vh; resize: none; border-width: 0 0 1px; border-radius: 0; box-shadow: 0 2px 7px #0003; }
 .damageListPane.topDocked .damageListHeader { cursor: default; }
-.damageListPane.topDocked .panelResizeHandle { left: 0; right: 0; bottom: 0; width: 100%; height: 9px; cursor: ns-resize; touch-action: none; background: linear-gradient(transparent 3px, #78909a 3px, #78909a 5px, transparent 5px); }
-.damageListPane.topDocked .panelResizeHandle:hover { background: linear-gradient(transparent 2px, #087f8c 2px, #087f8c 6px, transparent 6px); }
+.damageListPane.topDocked .panelResizeHandle { left: 0; right: 0; bottom: 0; width: 100%; height: 15px; cursor: ns-resize; touch-action: none; background: linear-gradient(transparent 6px, #78909a 6px, #78909a 9px, transparent 9px); }
+.damageListPane.topDocked .panelResizeHandle::after { content: ""; position: absolute; left: 50%; top: 2px; width: 74px; height: 11px; transform: translateX(-50%); border: 1px solid #66828b; border-radius: 7px; background: repeating-linear-gradient(0deg, #edf4f6 0 2px, #78909a 2px 3px); box-shadow: 0 1px 3px #0004; }
+.damageListPane.topDocked .panelResizeHandle:hover { background: linear-gradient(transparent 5px, #087f8c 5px, #087f8c 10px, transparent 10px); }
+.damageListPane.topDocked .panelResizeHandle:hover::after { border-color: #006d78; background: repeating-linear-gradient(0deg, #d8f3f5 0 2px, #087f8c 2px 3px); }
 .drawingInfoBackdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 16px; background: #10252c99; }
 .drawingInfoCard { width: min(94vw, 780px); max-height: 86vh; display: flex; flex-direction: column; padding: 12px; overflow: hidden; border-radius: 12px; background: white; box-shadow: 0 12px 40px #0008; }
 .hotspotAddCard { width: min(92vw, 420px); display: grid; gap: 10px; padding: 16px; border-radius: 12px; background: white; box-shadow: 0 12px 40px #0008; }
@@ -248,7 +253,8 @@ main.photoFloating #paneDivider { display: none; }
 .viewer.panning { cursor: grabbing; user-select: none; }
 .pageWrap { position: relative; margin: 8px auto; background: white; box-shadow: 0 2px 9px #0004; }
 .pageWrap canvas { display: block; width: 100%; height: 100%; }
-.hotspot { position: absolute; z-index: 2; border: 0; background: transparent; color: transparent; padding: 0; touch-action: none; cursor: grab; }
+.hotspot { position: absolute; z-index: 2; border: 0; background: transparent; color: transparent; padding: 0; touch-action: none; cursor: pointer; }
+#elementViewer.hotspotEditing .hotspot { cursor: grab; }
 .hotspot.dragging { z-index: 8; cursor: grabbing; }
 .hotspot-outline { position: absolute; left: 50%; top: 50%; box-sizing: border-box; transform: translate(-50%, -50%); border: 2px solid #ff9800; border-radius: 5px; background: #fff4; pointer-events: none; }
 .hotspot::after { content: attr(data-label); position: absolute; left: 0; bottom: 100%; padding: 2px 5px; border-radius: 4px 4px 0 0; background: #ff8f00; color: white; font-size: 11px; white-space: nowrap; opacity: 0; }
