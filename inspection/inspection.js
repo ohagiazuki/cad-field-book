@@ -22,7 +22,7 @@
   const state = {
     element: { doc: null, page: 1, viewer: $('elementViewer'), label: $('elementPage'), zoom: 1, focus: null },
     photo: { doc: null, page: 1, viewer: $('photoViewer'), label: $('photoPage'), zoom: 1, focus: null, matches: null, pageOverview: false, fitPaneAfterRender: false, dockMode: 'free' },
-    photoIndex: new Map(), damageNumberDigits: 2, assessmentIndex: new Map(), assessmentRows: [], assessmentDoc: null, assessmentFocusNumbers: [], assessmentFocusSpan: '', currentDamage: null, renderToken: { element: 0, photo: 0 },
+    photoIndex: new Map(), damageNumberDigits: 2, assessmentIndex: new Map(), assessmentRows: [], assessmentDoc: null, assessmentFocusNumbers: [], assessmentFocusSpan: '', currentDamage: null, renderToken: { element: 0, photo: 0 }, renderTasks: { element: null, photo: null }, elementTextContent: new Map(),
     ocrWorker: null, ocrHotspots: new Map(), textDamageNumbers: new Map(), elementSpanNumbers: new Map(), ocrJobs: new Map(), ocrProgress: null, missingDamageNumbers: [], missingPhotoNumbers: [], ignoredMissing: new Set(), manualHotspots: new Map(), hotspotOverrides: new Map(), pendingManualDamage: null,
     drawMode: 'select', previousDrawMode: 'free', drawingSide: 'element', pendingImage: '', annotations: new Map(), photoAnnotations: new Map(), activePhotoAnnotationKey: null, selectedAnnotation: null, annotationCopyArmed: false, hotspotEditMode: false, editingHotspot: null, hotspotFocusNumbers: []
   };
@@ -154,7 +154,7 @@
       target.focus = null;
       target.matches = null;
       if (side === 'photo') target.pageOverview = false;
-      if (side === 'element') { state.ocrHotspots.clear(); state.textDamageNumbers.clear(); state.elementSpanNumbers.clear(); state.ocrJobs.clear(); }
+      if (side === 'element') { state.ocrHotspots.clear(); state.textDamageNumbers.clear(); state.elementSpanNumbers.clear(); state.elementTextContent.clear(); state.ocrJobs.clear(); }
       $(side === 'element' ? 'elementName' : 'photoName').textContent = file.name;
       if (side === 'photo') await buildPhotoIndex();
       await renderSide(side);
@@ -438,7 +438,19 @@
     const current = String(state.currentDamage?.damageNumber || '');
     const damageNumber = matches.includes(current) ? current : (matches[0] || row.damageNumbers?.[0] || current);
     const photoEntries = state.photoIndex.get(String(damageNumber)) || [];
-    const sourceRecords = photoEntries.length ? photoEntries.map(entry => entry.record || {}) : [{}];
+    // One assessment row represents one inspection-result row. A damage
+    // number may have several indexed photos, so choose only the closest
+    // matching photo record instead of duplicating the selected assessment.
+    const scorePhotoEntry = entry => {
+      const source = entry.record || {}; let score = 0;
+      if (row.spanNumber && String(source.spanNumber || '') === String(row.spanNumber)) score += 8;
+      if (row.memberSymbol && source.memberSymbol === row.memberSymbol) score += 4;
+      if (row.memberNumber && source.memberNumber === row.memberNumber) score += 3;
+      if (row.damageType && source.damageType === row.damageType) score += 2;
+      return score;
+    };
+    const bestPhoto = [...photoEntries].sort((a, b) => scorePhotoEntry(b) - scorePhotoEntry(a))[0];
+    const sourceRecords = [bestPhoto?.record || {}];
     for (const item of items) item.damageInfo = {
         damageNumber: String(damageNumber || ''), elementPage: state.element.page,
         records: sourceRecords.map(source => ({ ...source,
@@ -506,6 +518,7 @@
     target.page = Math.max(1, Math.min(target.doc.numPages, target.page));
     const token = ++state.renderToken[side];
     const page = await target.doc.getPage(target.page);
+    if (token !== state.renderToken[side]) return;
     const base = page.getViewport({ scale: 1 });
     const crop = side === 'photo' && target.focus && !target.pageOverview
       ? photoRecordCrop(base, target.focus)
@@ -528,12 +541,20 @@
     wrap.appendChild(canvas);
     if (side === 'photo' && target.focus) {
       const factor = cssScale * dpr;
-      await page.render({ canvasContext: canvas.getContext('2d'), viewport, transform: [1, 0, 0, 1, -crop.x * factor, -crop.y * factor] }).promise;
+      state.renderTasks[side]?.cancel();
+      const renderTask = page.render({ canvasContext: canvas.getContext('2d'), viewport, transform: [1, 0, 0, 1, -crop.x * factor, -crop.y * factor] });
+      state.renderTasks[side] = renderTask;
+      try { await renderTask.promise; } catch (error) { if (error?.name === 'RenderingCancelledException') return; throw error; }
+      if (state.renderTasks[side] === renderTask) state.renderTasks[side] = null;
       const trimmed = trimCanvasWhitespace(canvas, dpr);
       wrap.style.width = `${trimmed.width}px`;
       wrap.style.height = `${trimmed.height}px`;
     } else {
-      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      state.renderTasks[side]?.cancel();
+      const renderTask = page.render({ canvasContext: canvas.getContext('2d'), viewport });
+      state.renderTasks[side] = renderTask;
+      try { await renderTask.promise; } catch (error) { if (error?.name === 'RenderingCancelledException') return; throw error; }
+      if (state.renderTasks[side] === renderTask) state.renderTasks[side] = null;
     }
     if (token !== state.renderToken[side]) return;
     // Keep the old page visible while the new canvas is rendered. Replacing
@@ -853,13 +874,14 @@
   function addSelectionControls(svg, selectedNodes, selections) {
     svg.querySelector('.selectionControls')?.remove();
     if (!selectedNodes.length) return;
-    const boxes = selectedNodes.map(node => node.getBBox()), padding = 8;
+    const selectionZoom = Math.max(.1, state[selections[0]?.side]?.zoom || 1);
+    const boxes = selectedNodes.map(node => node.getBBox()), padding = 8 / selectionZoom;
     const bounds = { left: Math.min(...boxes.map(box => box.x)) - padding, top: Math.min(...boxes.map(box => box.y)) - padding, right: Math.max(...boxes.map(box => box.x + box.width)) + padding, bottom: Math.max(...boxes.map(box => box.y + box.height)) + padding };
     bounds.width = Math.max(1, bounds.right - bounds.left); bounds.height = Math.max(1, bounds.bottom - bounds.top);
     const controls = svgNode('g'); controls.classList.add('selectionControls');
     const box = svgNode('rect', { x: bounds.left, y: bounds.top, width: bounds.width, height: bounds.height, class: 'selectionBox' }); controls.appendChild(box);
     const positions = { nw: [bounds.left, bounds.top], n: [(bounds.left + bounds.right) / 2, bounds.top], ne: [bounds.right, bounds.top], e: [bounds.right, (bounds.top + bounds.bottom) / 2], se: [bounds.right, bounds.bottom], s: [(bounds.left + bounds.right) / 2, bounds.bottom], sw: [bounds.left, bounds.bottom], w: [bounds.left, (bounds.top + bounds.bottom) / 2] };
-    for (const [handle, [x, y]] of Object.entries(positions)) controls.appendChild(svgNode('circle', { cx: x, cy: y, r: 3.5, class: 'selectionHandle', 'data-handle': handle }));
+    for (const [handle, [x, y]] of Object.entries(positions)) controls.appendChild(svgNode('circle', { cx: x, cy: y, r: 3.5 / selectionZoom, class: 'selectionHandle', 'data-handle': handle }));
     svg.appendChild(controls);
     const svgPoint = event => { const rect = svg.getBoundingClientRect(); return { x: (event.clientX - rect.left) / rect.width * 1000, y: (event.clientY - rect.top) / rect.height * 1000 }; };
     const beginTransform = event => {
@@ -1165,7 +1187,10 @@
     }
   }
   async function addDamageHotspots(page, wrap, cssScale, pageNumber = state.element.page) {
-    const content = await page.getTextContent();
+    const hadParsedNumbers = state.textDamageNumbers.has(pageNumber);
+    let content = state.elementTextContent.get(pageNumber);
+    if (!content) { content = await page.getTextContent(); state.elementTextContent.set(pageNumber, content); }
+    if (!wrap.isConnected) return;
     state.elementSpanNumbers.set(pageNumber, spanNumberFromItems(content.items));
     const items = content.items;
     const baseViewport = page.getViewport({ scale: cssScale });
@@ -1239,7 +1264,7 @@
     // Text hotspots are rendered asynchronously after the page appears.
     // Rebuild the missing-number list now so already visible orange frames do
     // not remain incorrectly listed as unrecognized.
-    if (!state.ocrProgress) auditRecognizedDamageNumbers();
+    if (!hadParsedNumbers && !state.ocrProgress) auditRecognizedDamageNumbers();
     highlightElementHotspots();
   }
   async function ensureOcrWorker() {
@@ -2549,7 +2574,7 @@
       viewer.scrollTop = Math.max(0, contentY - anchor.viewerY);
       // Canvas, margins and scroll bounds may settle on separate frames.
       // Measure the real point under the cursor and remove any residual drift.
-      for (let pass = 0; pass < 3; pass++) {
+      for (let pass = 0; pass < 1; pass++) {
         await new Promise(resolve => requestAnimationFrame(resolve));
         const currentPage = viewer.querySelectorAll('.pageWrap')[anchor.index];
         if (!currentPage) break;

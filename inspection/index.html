@@ -7,11 +7,11 @@
     // OCR uses Web Workers and WASM, which browsers block on file:// pages.
     // When this HTML is opened directly, switch to the local web server where
     // the exact same files can run with a normal HTTP origin.
-    if (location.protocol === 'file:') location.replace('http://127.0.0.1:8098/inspection/index.html?v=389');
+    if (location.protocol === 'file:') location.replace('http://127.0.0.1:8098/inspection/index.html?v=391');
   </script>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>点検モード | CAD野帳</title>
-  <link rel="stylesheet" href="inspection.css?v=389">
+  <link rel="stylesheet" href="inspection.css?v=391">
 </head>
 <body>
   <header>
@@ -86,6 +86,6 @@
   <div id="pastPhotoImportDialog" class="drawingInfoBackdrop hiddenPanel" role="dialog" aria-modal="true" aria-label="前回写真の切り取り確認"><section class="pastPhotoImportCard"><div class="drawingInfoHeader"><strong>前回写真の切り取り確認</strong><button id="pastPhotoImportClose">閉じる</button></div><p id="pastPhotoImportStatus">オレンジ枠内が取り込まれます。</p><div id="pastPhotoImportList" class="pastPhotoImportList"></div></section></div>
   <script src="../pdfjs/pdf.min.js"></script>
   <script src="../tesseract/tesseract.min.js"></script>
-  <script src="inspection.js?v=389"></script>
+  <script src="inspection.js?v=391"></script>
 </body>
 </html>
