@@ -959,6 +959,7 @@
   }
   function drawAnnotation(svg, item, displayFontScale = 1) {
     let node;
+    const arrowMarkerUrl = `url(#${svg.dataset.arrowMarkerId || 'inspectionArrow'})`;
     if (item.type === 'image') {
       node = svgNode('image', { x: Math.min(item.x1, item.x2), y: Math.min(item.y1, item.y2), width: Math.abs(item.x2 - item.x1), height: Math.abs(item.y2 - item.y1), href: item.imageData, preserveAspectRatio: 'xMidYMid meet' });
     } else if (item.type === 'boxedNumber') {
@@ -981,17 +982,18 @@
       node = svgNode('path', { d: (item.points || []).map((point, index) => `${index ? 'L' : 'M'} ${point.x} ${point.y}`).join(' ') });
     } else if (item.type === 'leader') {
       const tail = item.x3 ?? (item.x2 + (item.x2 >= item.x1 ? 120 : -120));
-      node = svgNode('polyline', { points: `${item.x1},${item.y1} ${item.x2},${item.y2} ${tail},${item.y2}`, 'marker-start': 'url(#inspectionArrow)' });
+      node = svgNode('polyline', { points: `${item.x1},${item.y1} ${item.x2},${item.y2} ${tail},${item.y2}`, 'marker-start': arrowMarkerUrl });
       if (item.text) {
-        const label = svgNode('text', { x: Math.min(item.x2, tail), y: item.y2 - 8 });
+        const fontSize = (item.fontSize || 18) * displayFontScale;
+        const label = svgNode('text', { x: Math.min(item.x2, tail) + 2, y: item.y2 - Math.max(1.5, fontSize * .22) });
         label.textContent = item.text;
         label.style.fill = item.color || '#e53935';
-        label.style.fontSize = `${(item.fontSize || 18) * displayFontScale}px`;
+        label.style.fontSize = `${fontSize}px`;
         svg.appendChild(label);
       }
     } else {
       node = svgNode('line', { x1: item.x1, y1: item.y1, x2: item.x2, y2: item.y2 });
-      if (item.type === 'arrow') node.setAttribute('marker-end', 'url(#inspectionArrow)');
+      if (item.type === 'arrow') node.setAttribute('marker-end', arrowMarkerUrl);
     }
     const color = item.color || '#e53935';
     node.style.stroke = color;
@@ -1005,10 +1007,11 @@
     const svg = svgNode('svg', { viewBox: '0 0 1000 1000', preserveAspectRatio: 'none' });
     svg.classList.add('annotationLayer');
     svg.dataset.annotationKey = String(pageNumber); svg.dataset.annotationSide = side;
+    svg.dataset.arrowMarkerId = `inspectionArrow-${side}-${String(pageNumber).replace(/[^a-zA-Z0-9_-]/g, '-')}`;
     if (!['select', 'pan'].includes(state.drawMode) && state.drawingSide === side) svg.classList.add('drawing');
     if (state.drawMode === 'select' && state.drawingSide === side && !$('commonDrawTools').classList.contains('hiddenPanel')) svg.classList.add('selecting');
     const defs = svgNode('defs');
-    const marker = svgNode('marker', { id: 'inspectionArrow', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, orient: 'auto-start-reverse' });
+    const marker = svgNode('marker', { id: svg.dataset.arrowMarkerId, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, orient: 'auto-start-reverse' });
     marker.appendChild(svgNode('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'context-stroke', stroke: 'none' }));
     defs.appendChild(marker); svg.appendChild(defs);
     annotationList(pageNumber, side).forEach((item, index) => {
@@ -1038,6 +1041,11 @@
     let preview = null;
     let freePoints = null;
     let rangeSelecting = false;
+    const cancelInProgressDrawing = () => {
+      if (preview?.isConnected) preview.remove();
+      start = null; preview = null; freePoints = null; rangeSelecting = false;
+    };
+    svg.addEventListener('inspection-pinchstart', cancelInProgressDrawing);
     const drawingStyle = () => ({ color: $('drawColor').value, width: Number($('drawWidth').value), fontSize: Number($('drawFontSize').value), dash: $('drawDash').value });
     const point = event => {
       const rect = svg.getBoundingClientRect();
@@ -2514,6 +2522,7 @@
     let previewRatio = 1;
     let wheelTimer = 0;
     let panStart = null;
+    let gestureRevision = 0;
     viewer.addEventListener('pointerdown', event => {
       const temporaryPan = event.button === 1;
       if (!temporaryPan && !(state.drawMode === 'pan' && state.drawingSide === side)) return;
@@ -2596,6 +2605,8 @@
     };
     viewer.addEventListener('touchstart', event => {
       if (event.touches.length !== 2) return;
+      gestureRevision++;
+      viewer.querySelectorAll('.annotationLayer').forEach(layer => layer.dispatchEvent(new Event('inspection-pinchstart')));
       pinchStartDistance = distance(event.touches);
       pinchStartZoom = target.zoom;
       pinchAnchor = captureAnchor(
@@ -2621,13 +2632,16 @@
     }, { passive: false });
     const finishPinch = async event => {
       if (!pinchStartDistance || event.touches.length > 1) return;
+      const revision = gestureRevision;
+      const anchor = pinchAnchor;
       pinchStartDistance = 0;
       // Keep the live CSS-scaled preview visible while the sharp PDF canvas
       // is rendered off-DOM. Restore the anchor immediately after the swap so
       // Safari never paints the new canvas at scroll position 0,0.
       await renderSide(side);
+      if (revision !== gestureRevision) return;
       clearPreview();
-      await restoreAnchor(pinchAnchor);
+      await restoreAnchor(anchor);
       pinchAnchor = null;
     };
     viewer.addEventListener('touchend', finishPinch, { passive: true });
@@ -2765,6 +2779,39 @@
     else { row.record[field] = value; }
     $('globalStatus').textContent = '点検結果を修正しました';
   }
+  let memoChoiceTarget = null;
+  function closeMemoChoice() { memoChoiceTarget = null; $('memoChoiceDialog').classList.add('hiddenPanel'); }
+  function saveMemoChoice(value) {
+    const target = memoChoiceTarget; if (!target) return;
+    updateInspectionResultCell(target.row, target.field, value, target.photoIndex, target.photoField);
+    closeMemoChoice(); renderDamageList();
+  }
+  function showMemoChoice(row, photoIndex = null) {
+    memoChoiceTarget = { row, field: photoIndex === null ? 'memo' : '', photoIndex, photoField: photoIndex === null ? '' : 'memo' };
+    const list = $('memoChoiceList'); list.replaceChildren();
+    const candidates = [], seen = new Set();
+    const add = (source, value) => { const text = inspectionComment(cleanField(value)); if (!text || seen.has(text)) return; seen.add(text); candidates.push({ source, text }); };
+    state.assessmentRows.filter(item =>
+      (!row.spanNumber || !item.spanNumber || String(item.spanNumber) === String(row.spanNumber)) &&
+      (!row.damageNumber || (item.damageNumbers || []).map(String).includes(String(row.damageNumber))))
+      .forEach(item => add('過年度コメント', item.comment));
+    state.assessmentRows.forEach(item => add('過年度コメント', item.comment));
+    damageListRows().forEach(item => {
+      if (item.drawing !== row.drawing || item.record !== row.record) add('点検結果メモ', item.memo);
+      item.photos.forEach(photo => add('点検結果・写真メモ', photo.memo));
+    });
+    for (const candidate of candidates) {
+      const button = document.createElement('button'); button.className = 'drawingCandidate';
+      button.innerHTML = `<small class="memoChoiceSource">${escapeHtml(candidate.source)}</small><span>${escapeHtml(candidate.text)}</span>`;
+      button.addEventListener('click', () => saveMemoChoice(candidate.text)); list.appendChild(button);
+    }
+    if (!candidates.length) list.innerHTML = '<div class="drawingCandidateEmpty">コピーできるメモがありません。直接記入してください。</div>';
+    $('memoChoiceDialog').classList.remove('hiddenPanel');
+  }
+  function makeMemoChoiceCell(td, row, photoIndex = null) {
+    td.classList.add('editableResultCell', 'memoChoiceCell'); td.title = 'タップして入力方法を選択';
+    td.addEventListener('click', event => { event.stopPropagation(); showMemoChoice(row, photoIndex); });
+  }
   function makeResultCellEditable(td, save) {
     td.classList.add('editableResultCell'); td.contentEditable = 'plaintext-only'; td.spellcheck = false; td.title = 'タップして修正';
     td.addEventListener('click', event => event.stopPropagation());
@@ -2792,7 +2839,8 @@
       const fields = ['drawingId', 'damageNumber', 'spanNumber', 'memberName', 'memberSymbol', 'memberNumber', 'damageType', 'damagePattern', 'classification', 'damageLevel', 'diagnosis', 'memo'];
       for (const field of fields) {
         const td = document.createElement('td'); td.textContent = row[field] || '';
-        if (field !== 'drawingId') makeResultCellEditable(td, value => updateInspectionResultCell(row, field, value));
+        if (field === 'memo') makeMemoChoiceCell(td, row);
+        else if (field !== 'drawingId') makeResultCellEditable(td, value => updateInspectionResultCell(row, field, value));
         tr.appendChild(td);
       }
       row.photos.slice(0, 4).forEach((photo, photoIndex) => {
@@ -2818,7 +2866,7 @@
             td.appendChild(wrap);
           } else {
             td.textContent = photo.memo || '';
-            makeResultCellEditable(td, value => updateInspectionResultCell(row, '', value, photoIndex, 'memo'));
+            makeMemoChoiceCell(td, row, photoIndex);
           }
           tr.appendChild(td);
         }
@@ -3322,6 +3370,14 @@
   $('backButton').addEventListener('click', () => { location.href = '../?mode=draw'; });
   $('pastPhotoImportClose').addEventListener('click', () => $('pastPhotoImportDialog').classList.add('hiddenPanel'));
   $('pastPhotoImportDialog').addEventListener('click', event => { if (event.target === $('pastPhotoImportDialog')) $('pastPhotoImportDialog').classList.add('hiddenPanel'); });
+  $('memoChoiceClose').addEventListener('click', closeMemoChoice);
+  $('memoChoiceDialog').addEventListener('click', event => { if (event.target === $('memoChoiceDialog')) closeMemoChoice(); });
+  $('memoDirectInput').addEventListener('click', () => {
+    const target = memoChoiceTarget; if (!target) return;
+    const current = target.photoIndex === null ? target.row.memo : target.row.photos[target.photoIndex].memo;
+    const entered = prompt('メモを入力してください', current || '');
+    if (entered !== null) saveMemoChoice(entered);
+  });
   const updateNetworkStatus = () => {
     const online = navigator.onLine;
     $('networkStatus').textContent = online ? 'オンライン' : 'オフライン';

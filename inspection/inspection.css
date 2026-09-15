@@ -188,6 +188,10 @@ main.photoFloating #paneDivider { display: none; }
 .drawingCandidate small { margin-top: 3px; color: #536c74; font-weight: 500; }
 .drawingCandidateEmpty { padding: 22px; text-align: center; color: #60777f; background: #f1f6f7; border-radius: 8px; }
 .drawingInfoNone { margin-top: 9px; align-self: flex-end; }
+.memoChoiceActions { display: flex; gap: 8px; margin-top: 8px; }
+.memoChoiceActions button { background: #087f8c; color: white; }
+.memoChoiceSource { display: block; margin-bottom: 3px; color: #8a5700; font-size: 11px; }
+.memoChoiceCell { cursor: pointer !important; }
 .pastPhotoImportCard { width: min(95vw, 980px); max-height: 94vh; display: flex; flex-direction: column; gap: 8px; padding: 12px; overflow: hidden; border-radius: 12px; background: white; box-shadow: 0 12px 40px #0008; }
 .pastPhotoImportCard > p { margin: 0; color: #526a72; font-size: 13px; }
 .pastPhotoImportList { min-height: 180px; overflow: auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }

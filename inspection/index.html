@@ -7,11 +7,11 @@
     // OCR uses Web Workers and WASM, which browsers block on file:// pages.
     // When this HTML is opened directly, switch to the local web server where
     // the exact same files can run with a normal HTTP origin.
-    if (location.protocol === 'file:') location.replace('http://127.0.0.1:8098/inspection/index.html?v=391');
+    if (location.protocol === 'file:') location.replace('http://127.0.0.1:8098/inspection/index.html?v=393');
   </script>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>点検モード | CAD野帳</title>
-  <link rel="stylesheet" href="inspection.css?v=391">
+  <link rel="stylesheet" href="inspection.css?v=393">
 </head>
 <body>
   <header>
@@ -84,8 +84,9 @@
     <section class="numberKeypadCard"><strong>写真番号を入力</strong><input id="boxedNumberInput" type="text" inputmode="none" readonly placeholder="例：1－2"><div class="numberKeys"><button data-number-key="1">1</button><button data-number-key="2">2</button><button data-number-key="3">3</button><button data-number-key="4">4</button><button data-number-key="5">5</button><button data-number-key="6">6</button><button data-number-key="7">7</button><button data-number-key="8">8</button><button data-number-key="9">9</button><button data-number-key="－">－</button><button data-number-key="0">0</button><button data-number-key="back">⌫</button></div><div class="numberKeypadActions"><button id="numberKeypadCancel">取消</button><button id="numberKeypadOk">OK</button></div></section>
   </div>
   <div id="pastPhotoImportDialog" class="drawingInfoBackdrop hiddenPanel" role="dialog" aria-modal="true" aria-label="前回写真の切り取り確認"><section class="pastPhotoImportCard"><div class="drawingInfoHeader"><strong>前回写真の切り取り確認</strong><button id="pastPhotoImportClose">閉じる</button></div><p id="pastPhotoImportStatus">オレンジ枠内が取り込まれます。</p><div id="pastPhotoImportList" class="pastPhotoImportList"></div></section></div>
+  <div id="memoChoiceDialog" class="drawingInfoBackdrop hiddenPanel" role="dialog" aria-modal="true" aria-label="メモの入力方法"><section class="drawingInfoCard"><div class="drawingInfoHeader"><strong>メモの入力方法</strong><button id="memoChoiceClose">閉じる</button></div><div class="memoChoiceActions"><button id="memoDirectInput">直接記入</button></div><p>コピーする内容を選択してください。</p><div id="memoChoiceList" class="drawingCandidateList"></div></section></div>
   <script src="../pdfjs/pdf.min.js"></script>
   <script src="../tesseract/tesseract.min.js"></script>
-  <script src="inspection.js?v=391"></script>
+  <script src="inspection.js?v=393"></script>
 </body>
 </html>
