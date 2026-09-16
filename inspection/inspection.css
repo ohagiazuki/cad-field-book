@@ -180,6 +180,30 @@ main.photoFloating #paneDivider { display: none; }
 .drawingInfoHeader strong { margin-right: auto; font-size: 17px; }
 .drawingInfoHeader button { padding: 5px 9px; }
 .drawingInfoCard > p { margin: 8px 0; color: #4c636b; font-size: 13px; }
+.drawingInfoSources { display: flex; gap: 6px; margin-top: 9px; }
+.drawingInfoSources button { flex: 1; padding: 7px; font-size: 13px; }
+.drawingInfoSources button.active { background: #087f8c; color: white; }
+.drawingDirectForm { display: grid; grid-template-columns: repeat(3, minmax(120px, 1fr)); gap: 8px; padding: 10px; background: #eef5f7; border-radius: 9px; }
+.drawingDirectForm label { display: grid; gap: 3px; font-size: 11px; font-weight: 800; }
+.drawingDirectForm input { min-width: 0; padding: 7px; border: 1px solid #8ba0a7; border-radius: 5px; }
+.drawingDirectForm .wide { grid-column: 1 / -1; }
+.drawingDirectForm button { grid-column: 1 / -1; justify-self: end; background: #087f8c; color: white; }
+.drawingInfoPreview { border: 2px solid #e18a00; background: #fff9e9; }
+.drawingInfoPreview input:focus { outline: 2px solid #e18a00; background: white; }
+.leaderContentChooser { display: flex; flex-wrap: wrap; gap: 7px 14px; margin: 0; padding: 8px 10px; border: 1px solid #d59020; border-radius: 7px; background: #fffdf6; }
+.leaderContentChooser legend { padding: 0 5px; color: #8a5700; font-size: 12px; font-weight: 900; }
+.drawingDirectForm .leaderContentChooser label { display: flex; grid-template-columns: none; align-items: center; gap: 5px; font-size: 12px; }
+.drawingDirectForm .leaderContentChooser input { width: 17px; height: 17px; min-width: 17px; padding: 0; }
+.kochiRulePanel { display: grid; gap: 7px; padding: 9px; border: 1px solid #73a6af; border-radius: 7px; background: #f7fcfd; }
+.kochiRuleTitle { color: #075d68; font-size: 12px; font-weight: 900; }
+.kochiRuleGroup { display: grid; grid-template-columns: 125px minmax(0, 1fr); align-items: center; gap: 7px; }
+.kochiRuleGroup > strong { font-size: 11px; }
+.kochiRuleChoices { display: flex; flex-wrap: wrap; gap: 4px; }
+.drawingDirectForm .kochiRuleChoices button { grid-column: auto; justify-self: auto; padding: 4px 8px; border-color: #78a2aa; background: white; color: #075d68; font-size: 12px; }
+.drawingDirectForm .kochiRuleChoices button:active { background: #087f8c; color: white; }
+.kochiRuleEmpty { color: #687d84; font-size: 11px; }
+@media (max-width: 650px) { .drawingDirectForm { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 650px) { .kochiRuleGroup { grid-template-columns: 1fr; } }
 .drawingCandidateList { min-height: 80px; overflow: auto; display: grid; gap: 7px; }
 .drawingCandidate { width: 100%; padding: 9px 11px; text-align: left; border-color: #82a2aa; background: #f8fbfc; }
 .drawingCandidate strong, .drawingCandidate span, .drawingCandidate small { display: block; }
@@ -253,6 +277,9 @@ main.photoFloating #paneDivider { display: none; }
 .selectionControls .selectionHandle[data-handle="ne"], .selectionControls .selectionHandle[data-handle="sw"] { cursor: nesw-resize; }
 .selectionControls .selectionHandle[data-handle="n"], .selectionControls .selectionHandle[data-handle="s"] { cursor: ns-resize; }
 .selectionControls .selectionHandle[data-handle="e"], .selectionControls .selectionHandle[data-handle="w"] { cursor: ew-resize; }
+.selectionControls .leaderPointHandle { fill: #fff4da; stroke: #e18a00; stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: all; cursor: grab; }
+.selectionControls .leaderPointHandle:active { cursor: grabbing; fill: #e18a00; }
+.leaderTapMarker { fill: #fff4da; stroke: #e18a00; stroke-width: 2; vector-effect: non-scaling-stroke; pointer-events: none; }
 .annotationLayer line, .annotationLayer rect, .annotationLayer ellipse, .annotationLayer path, .annotationLayer polyline { fill: none; vector-effect: non-scaling-stroke; }
 .annotationLayer marker path { fill: context-stroke; stroke: none; }
 .annotationLayer text { font-size: 18px; font-weight: 700; paint-order: stroke; stroke: white; stroke-width: 3px; vector-effect: non-scaling-stroke; }
@@ -274,6 +301,7 @@ main.photoFloating #paneDivider { display: none; }
 .pageWrap { position: relative; margin: 8px auto; background: white; box-shadow: 0 2px 9px #0004; }
 .pageWrap canvas { display: block; width: 100%; height: 100%; }
 .hotspot { position: absolute; z-index: 2; border: 0; background: transparent; color: transparent; padding: 0; touch-action: none; cursor: pointer; }
+.viewer.pinchZooming .hotspot { pointer-events: none; }
 #elementViewer.hotspotEditing .hotspot { cursor: grab; }
 .hotspot.dragging { z-index: 8; cursor: grabbing; }
 .hotspot-outline { position: absolute; left: 50%; top: 50%; box-sizing: border-box; transform: translate(-50%, -50%); border: 2px solid #ff9800; border-radius: 5px; background: #fff4; pointer-events: none; }

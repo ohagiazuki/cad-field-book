@@ -7,11 +7,11 @@
     // OCR uses Web Workers and WASM, which browsers block on file:// pages.
     // When this HTML is opened directly, switch to the local web server where
     // the exact same files can run with a normal HTTP origin.
-    if (location.protocol === 'file:') location.replace('http://127.0.0.1:8098/inspection/index.html?v=393');
+    if (location.protocol === 'file:') location.replace('http://127.0.0.1:8098/inspection/index.html?v=404');
   </script>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>点検モード | CAD野帳</title>
-  <link rel="stylesheet" href="inspection.css?v=393">
+  <link rel="stylesheet" href="inspection.css?v=404">
 </head>
 <body>
   <header>
@@ -78,7 +78,7 @@
   <div id="annotationMiniMenu" class="annotationMiniMenu hiddenPanel"><span id="annotationSelectionCount">1個</span><button id="annotationDamageInfo">損傷情報登録</button><button id="annotationCopy">コピー</button><button id="annotationShrink">縮小</button><button id="annotationGrow">拡大</button><button id="annotationDelete" class="dangerButton">消去</button></div>
   <div id="hotspotAddDialog" class="drawingInfoBackdrop hiddenPanel" role="dialog" aria-modal="true" aria-label="オレンジ枠を追加"><section class="hotspotAddCard"><strong>オレンジ枠を追加</strong><label>径間番号<input id="addHotspotSpan" inputmode="numeric" placeholder="例：1"></label><label>損傷番号<input id="addHotspotNumber" inputmode="numeric" placeholder="例：01 または 16,17"></label><p>登録後、表示中の要素番号図で枠の位置をタップします。</p><div><button id="addHotspotCancel">取消</button><button id="addHotspotStart">位置を指定</button></div></section></div>
   <div id="drawingInfoDialog" class="drawingInfoBackdrop hiddenPanel" role="dialog" aria-modal="true" aria-label="作図情報の登録">
-    <section class="drawingInfoCard"><div class="drawingInfoHeader"><strong>損傷情報を登録</strong><button id="drawingInfoClose">閉じる</button></div><p>過年度評価一覧から、選択中の作図へコピーする損傷情報を選んでください。</p><div id="drawingCandidateList" class="drawingCandidateList"></div><button id="drawingInfoNone" class="drawingInfoNone">損傷情報を解除</button></section>
+    <section class="drawingInfoCard"><div class="drawingInfoHeader"><strong>損傷情報を登録</strong><button id="drawingInfoClose">閉じる</button></div><div class="drawingInfoSources"><button id="drawingSourceAssessment" class="active">過年度評価表</button><button id="drawingSourceInspection">点検結果表</button><button id="drawingSourceDirect">直接入力</button></div><p id="drawingInfoGuide">登録元を選び、選択中の作図へコピーする行を選んでください。</p><div id="drawingCandidateList" class="drawingCandidateList"></div><button id="drawingInfoNone" class="drawingInfoNone">損傷情報を解除</button></section>
   </div>
   <div id="numberKeypad" class="drawingInfoBackdrop hiddenPanel" role="dialog" aria-modal="true" aria-label="写真番号入力">
     <section class="numberKeypadCard"><strong>写真番号を入力</strong><input id="boxedNumberInput" type="text" inputmode="none" readonly placeholder="例：1－2"><div class="numberKeys"><button data-number-key="1">1</button><button data-number-key="2">2</button><button data-number-key="3">3</button><button data-number-key="4">4</button><button data-number-key="5">5</button><button data-number-key="6">6</button><button data-number-key="7">7</button><button data-number-key="8">8</button><button data-number-key="9">9</button><button data-number-key="－">－</button><button data-number-key="0">0</button><button data-number-key="back">⌫</button></div><div class="numberKeypadActions"><button id="numberKeypadCancel">取消</button><button id="numberKeypadOk">OK</button></div></section>
@@ -87,6 +87,6 @@
   <div id="memoChoiceDialog" class="drawingInfoBackdrop hiddenPanel" role="dialog" aria-modal="true" aria-label="メモの入力方法"><section class="drawingInfoCard"><div class="drawingInfoHeader"><strong>メモの入力方法</strong><button id="memoChoiceClose">閉じる</button></div><div class="memoChoiceActions"><button id="memoDirectInput">直接記入</button></div><p>コピーする内容を選択してください。</p><div id="memoChoiceList" class="drawingCandidateList"></div></section></div>
   <script src="../pdfjs/pdf.min.js"></script>
   <script src="../tesseract/tesseract.min.js"></script>
-  <script src="inspection.js?v=393"></script>
+  <script src="inspection.js?v=404"></script>
 </body>
 </html>

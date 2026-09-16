@@ -24,7 +24,7 @@
     photo: { doc: null, page: 1, viewer: $('photoViewer'), label: $('photoPage'), zoom: 1, focus: null, matches: null, pageOverview: false, fitPaneAfterRender: false, dockMode: 'free' },
     photoIndex: new Map(), damageNumberDigits: 2, assessmentIndex: new Map(), assessmentRows: [], assessmentDoc: null, assessmentFocusNumbers: [], assessmentFocusSpan: '', currentDamage: null, renderToken: { element: 0, photo: 0 }, renderTasks: { element: null, photo: null }, elementTextContent: new Map(),
     ocrWorker: null, ocrHotspots: new Map(), textDamageNumbers: new Map(), elementSpanNumbers: new Map(), ocrJobs: new Map(), ocrProgress: null, missingDamageNumbers: [], missingPhotoNumbers: [], ignoredMissing: new Set(), manualHotspots: new Map(), hotspotOverrides: new Map(), pendingManualDamage: null,
-    drawMode: 'select', previousDrawMode: 'free', drawingSide: 'element', pendingImage: '', annotations: new Map(), photoAnnotations: new Map(), activePhotoAnnotationKey: null, selectedAnnotation: null, annotationCopyArmed: false, hotspotEditMode: false, editingHotspot: null, hotspotFocusNumbers: []
+    drawMode: 'select', previousDrawMode: 'free', drawingSide: 'element', pendingImage: '', annotations: new Map(), photoAnnotations: new Map(), activePhotoAnnotationKey: null, selectedAnnotation: null, annotationCopyArmed: false, hotspotEditMode: false, editingHotspot: null, hotspotFocusNumbers: [], suppressHotspotUntil: 0
   };
   const cleanField = value => String(value || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
   function fieldRightOf(items, pattern) {
@@ -74,6 +74,15 @@
     const member = [record.memberName, record.memberNumber].filter(Boolean).join(' ');
     const damage = [record.damageType, record.damageLevel].filter(Boolean).join(' ');
     return [member, damage, `損傷${String(info.damageNumber || '').padStart(2, '0')}`].filter(Boolean).join(' / ');
+  }
+  const defaultLeaderFields = ['memberName', 'memberNumber', 'damageType', 'damageLevel', 'damageNumber'];
+  function leaderTextFromRow(row, damageNumber, fields = defaultLeaderFields) {
+    const enabled = new Set(fields || defaultLeaderFields), upper = [];
+    const member = [enabled.has('memberName') && row.memberName, enabled.has('memberNumber') && row.memberNumber].filter(Boolean).join(' ');
+    const damage = [enabled.has('damageType') && row.damageType, enabled.has('damageLevel') && row.damageLevel].filter(Boolean).join(' ');
+    if (member) upper.push(member); if (damage) upper.push(damage);
+    if (enabled.has('damageNumber') && damageNumber !== '') upper.push(`損傷${String(damageNumber).padStart(2, '0')}`);
+    return upper.join(' / ');
   }
   const normalizeDigits = (value) => value.replace(/[０-９]/g, c => String(c.charCodeAt(0) - 0xFEE0));
   const formatDamageNumber = value => String(Number(value)).padStart(state.damageNumberDigits, '0');
@@ -434,9 +443,10 @@
   function attachAssessmentToDrawing(itemOrItems, row) {
     const items = Array.isArray(itemOrItems) ? itemOrItems : [itemOrItems];
     const visible = visibleElementDamageNumbers();
-    const matches = (row.damageNumbers || []).filter(number => visible.has(number));
+    const rowNumbers = row.damageNumbers?.length ? row.damageNumbers.map(String) : (row.damageNumber ? [String(row.damageNumber)] : []);
+    const matches = rowNumbers.filter(number => visible.has(number));
     const current = String(state.currentDamage?.damageNumber || '');
-    const damageNumber = matches.includes(current) ? current : (matches[0] || row.damageNumbers?.[0] || current);
+    const damageNumber = matches.includes(current) ? current : (matches[0] || rowNumbers[0] || current || [...visible][0] || '');
     const photoEntries = state.photoIndex.get(String(damageNumber)) || [];
     // One assessment row represents one inspection-result row. A damage
     // number may have several indexed photos, so choose only the closest
@@ -451,40 +461,165 @@
     };
     const bestPhoto = [...photoEntries].sort((a, b) => scorePhotoEntry(b) - scorePhotoEntry(a))[0];
     const sourceRecords = [bestPhoto?.record || {}];
-    for (const item of items) item.damageInfo = {
+    for (const item of items) {
+      item.damageInfo = {
         damageNumber: String(damageNumber || ''), elementPage: state.element.page,
         records: sourceRecords.map(source => ({ ...source,
           damageNumber: String(damageNumber || source.damageNumber || ''), spanNumber: row.spanNumber || source.spanNumber || '',
           memberName: row.memberName || source.memberName || '', memberSymbol: row.memberSymbol || source.memberSymbol || '',
           memberNumber: row.memberNumber || source.memberNumber || '', damageType: row.damageType || source.damageType || '',
-          damagePattern: row.damagePattern || source.damagePattern || '', classification: row.classification || source.classification || '', damageLevel: row.damageLevel || source.damageLevel || '', diagnosis: row.diagnosis || source.diagnosis || '', memo: row.comment || source.memo || '', assessmentPage: row.pageNumber
+          damagePattern: row.damagePattern || source.damagePattern || '', classification: row.classification || source.classification || '', damageLevel: row.damageLevel || source.damageLevel || '', diagnosis: row.diagnosis || source.diagnosis || '', memo: row.comment || row.memo || source.memo || '', assessmentPage: row.pageNumber
         }))
       };
+      if (item.type === 'leader') item.text = leaderTextFromRow(row, damageNumber, row._leaderFields);
+      if (item.type === 'leader' && item.annotationSide === 'photo' && item.annotationKey) {
+        removeMirroredPhotoAnnotation(item.annotationKey, item.id);
+        const layer = [...state.photo.viewer.querySelectorAll('.annotationLayer')].find(candidate => candidate.dataset.annotationKey === String(item.annotationKey));
+        const sourceWrap = layer?.closest('.pageWrap'); if (sourceWrap) mirrorPhotoRecordAnnotation(sourceWrap, item.annotationKey, item);
+      }
+    }
     closeDrawingRegistration();
+    const changedSides = new Set(items.map(item => item.annotationSide).filter(Boolean));
+    changedSides.forEach(side => renderSide(side));
     if (!$('damageListPane').classList.contains('hiddenPanel')) renderDamageList();
     $('globalStatus').textContent = `${items.length}個の作図に損傷${String(damageNumber).padStart(2, '0')}の評価情報を登録しました`;
   }
-  function showDrawingRegistration(itemOrItems) {
-    const items = (Array.isArray(itemOrItems) ? itemOrItems : [itemOrItems]).filter(Boolean);
-    if (!items.length) return;
-    pendingDrawingRegistration = items;
+  function selectDrawingInfoSource(active) {
+    for (const id of ['drawingSourceAssessment', 'drawingSourceInspection', 'drawingSourceDirect']) $(id).classList.toggle('active', id === active);
+  }
+  const drawingInfoFields = [['damageNumber','損傷番号'],['spanNumber','径間番号'],['memberName','部材名称'],['memberSymbol','記号'],['memberNumber','要素番号'],['damageType','損傷の種類'],['damagePattern','損傷パターン'],['classification','分類'],['damageLevel','損傷程度'],['diagnosis','健全性の診断'],['comment','コメント','wide']];
+  const kochiDamageTypes = ['腐食','亀裂','ゆるみ・脱落','破断','防食機能の劣化','ひびわれ','剥離・鉄筋露出','漏水・遊離石灰','抜け落ち','補修・補強材の損傷','床版ひびわれ','うき','遊間の異常','路面の凹凸','舗装の異常','支承部の機能障害','その他','定着部の異常','変色・劣化','漏水・滞水','異常な音・振動','異常なたわみ','変形・欠損','土砂詰まり','沈下・移動・傾斜','洗掘'];
+  const kochiPatternDamageTypes = ['ひびわれ','床版ひびわれ','舗装の異常','支承部の機能障害','定着部の異常'];
+  const kochiClassificationDamageTypes = ['防食機能の劣化','補修・補強材の損傷','支承部の機能障害','定着部の異常','変色・劣化'];
+  const uniqueCleanValues = values => [...new Set(values.map(value => cleanField(value || '')).filter(Boolean))];
+  function sameDamageType(a, b) {
+    const normalize = value => cleanField(value || '').replace(/^[①-㉖\d０-９.．、\s]+/, '').replace(/[・･]/g, '・').replace(/ひび割れ/g, 'ひびわれ').replace(/剥離[・･]鉄筋露出/g, '剥離・鉄筋露出');
+    return normalize(a) === normalize(b);
+  }
+  function isKochiCodeValue(value) { return /^(?:-|\d+)$/.test(normalizeDigits(cleanField(value || ''))); }
+  function buildDrawingInfoInputs(form, sourceRow = {}) {
+    const inputs = {};
+    for (const [name, labelText, className] of drawingInfoFields) {
+      const label = document.createElement('label'); if (className) label.className = className; label.append(labelText);
+      const input = document.createElement('input');
+      const sourceValue = name === 'damageNumber' ? inferredDrawingDamageNumber(sourceRow) : (name === 'comment' ? sourceRow.comment || sourceRow.memo : sourceRow[name]);
+      input.value = cleanField(sourceValue || '');
+      if (name === 'damageNumber' || name === 'spanNumber') input.inputMode = 'numeric';
+      inputs[name] = input; label.appendChild(input); form.appendChild(label);
+    }
+    const typeList = document.createElement('datalist'); typeList.id = `kochiDamageTypes${Date.now()}${Math.random().toString(16).slice(2)}`;
+    for (const value of uniqueCleanValues([...kochiDamageTypes, ...state.assessmentRows.map(row => row.damageType)])) { const option = document.createElement('option'); option.value = value; typeList.appendChild(option); }
+    inputs.damageType.setAttribute('list', typeList.id); form.appendChild(typeList);
+    attachKochiDamageSuggestions(form, inputs);
+    return inputs;
+  }
+  function attachKochiDamageSuggestions(form, inputs) {
+    const panel = document.createElement('section'); panel.className = 'kochiRulePanel wide'; form.appendChild(panel);
+    const render = () => {
+      panel.replaceChildren();
+      const title = document.createElement('div'); title.className = 'kochiRuleTitle'; title.textContent = '高知県用 入力候補（診断結果は自動確定しません）'; panel.appendChild(title);
+      const matching = state.assessmentRows.filter(row => sameDamageType(row.damageType, inputs.damageType.value));
+      const patternApplies = kochiPatternDamageTypes.some(type => sameDamageType(type, inputs.damageType.value));
+      const classificationApplies = kochiClassificationDamageTypes.some(type => sameDamageType(type, inputs.damageType.value));
+      const groups = [
+        ['damagePattern','損傷パターン', uniqueCleanValues(matching.map(row => row.damagePattern)).filter(isKochiCodeValue), patternApplies ? '過年度実績なし（区分番号を直接入力）' : 'この損傷種類では入力対象外'],
+        ['classification','分類', uniqueCleanValues(matching.map(row => row.classification)).filter(isKochiCodeValue), classificationApplies ? '過年度実績なし（分類番号を直接入力）' : 'この損傷種類では入力対象外'],
+        ['damageLevel','損傷程度の評価', uniqueCleanValues([...matching.map(row => row.damageLevel), 'a','b','c','d','e']), '直接入力'],
+        ['diagnosis','健全性の診断結果', uniqueCleanValues([...matching.map(row => row.diagnosis), 'Ⅰ','Ⅱ','Ⅲ','Ⅳ']), '直接入力']
+      ];
+      for (const [name, labelText, values, emptyText] of groups) {
+        const group = document.createElement('div'); group.className = 'kochiRuleGroup';
+        const label = document.createElement('strong'); label.textContent = labelText; group.appendChild(label);
+        const choices = document.createElement('div'); choices.className = 'kochiRuleChoices';
+        if (!values.length) { const empty = document.createElement('span'); empty.className = 'kochiRuleEmpty'; empty.textContent = emptyText; choices.appendChild(empty); }
+        for (const value of values) { const button = document.createElement('button'); button.type = 'button'; button.textContent = value; button.addEventListener('click', () => { inputs[name].value = value; inputs[name].focus(); }); choices.appendChild(button); }
+        group.appendChild(choices); panel.appendChild(group);
+      }
+    };
+    inputs.damageType.addEventListener('input', render); inputs.damageType.addEventListener('change', render); render();
+  }
+  function inferredDrawingDamageNumber(row) {
+    const rowNumber = row.damageNumber || row.damageNumbers?.[0];
+    return String(rowNumber || state.currentDamage?.damageNumber || [...visibleElementDamageNumbers()][0] || '');
+  }
+  function showDrawingInfoPreview(sourceRow, sourceLabel) {
+    const list = $('drawingCandidateList'); list.replaceChildren();
+    document.querySelectorAll('.drawingInfoSources button').forEach(button => button.classList.remove('active'));
+    const form = document.createElement('div'); form.className = 'drawingDirectForm drawingInfoPreview';
+    const inputs = buildDrawingInfoInputs(form, sourceRow);
+    let leaderFieldInputs = null;
+    if ((pendingDrawingRegistration || []).some(item => item.type === 'leader')) {
+      const chooser = document.createElement('fieldset'); chooser.className = 'leaderContentChooser wide';
+      const legend = document.createElement('legend'); legend.textContent = '引き出し線へ表示する内容'; chooser.appendChild(legend);
+      leaderFieldInputs = {};
+      for (const [name, labelText] of [['memberName','部材名称'],['memberNumber','要素番号'],['damageType','損傷の種類'],['damageLevel','損傷程度'],['damageNumber','損傷番号']]) {
+        const label = document.createElement('label'), checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = true;
+        leaderFieldInputs[name] = checkbox; label.append(checkbox, labelText); chooser.appendChild(label);
+      }
+      form.appendChild(chooser);
+    }
+    const register = document.createElement('button'); register.textContent = '確認した内容を登録';
+    register.addEventListener('click', () => {
+      const edited = Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, cleanField(input.value)]));
+      const normalizedNumber = normalizeDigits(edited.damageNumber).match(/\d+/)?.[0] || '';
+      edited.damageNumber = normalizedNumber ? String(Number(normalizedNumber)) : '';
+      edited.damageNumbers = edited.damageNumber ? [edited.damageNumber] : [];
+      if (leaderFieldInputs) edited._leaderFields = Object.entries(leaderFieldInputs).filter(([, input]) => input.checked).map(([name]) => name);
+      edited.pageNumber = sourceRow.pageNumber;
+      attachAssessmentToDrawing(pendingDrawingRegistration, edited);
+    });
+    form.appendChild(register); list.appendChild(form);
+    $('drawingInfoGuide').textContent = `${sourceLabel}から読み込んだ内容です。各セルを修正してから登録してください。`;
+  }
+  function renderAssessmentDrawingCandidates() {
+    selectDrawingInfoSource('drawingSourceAssessment');
     const visible = visibleElementDamageNumbers();
     const current = String(state.currentDamage?.damageNumber || '');
-    const candidates = state.assessmentRows.filter(row => (row.damageNumbers || []).some(number => visible.has(number)))
+    const candidates = [...state.assessmentRows]
       .sort((a, b) => Number(!(a.damageNumbers || []).includes(current)) - Number(!(b.damageNumbers || []).includes(current)) || Number(a.memberNumber) - Number(b.memberNumber));
     const list = $('drawingCandidateList'); list.replaceChildren();
     if (!candidates.length) {
       const empty = document.createElement('div'); empty.className = 'drawingCandidateEmpty';
-      empty.textContent = state.assessmentRows.length ? 'このページの損傷番号に一致する評価データがありません' : '損傷程度の評価PDFが読み込まれていません';
+      empty.textContent = '損傷程度の評価PDFが読み込まれていません';
       list.appendChild(empty);
     }
     for (const row of candidates) {
       const button = document.createElement('button'); button.className = 'drawingCandidate';
       const matching = (row.damageNumbers || []).filter(number => visible.has(number));
-      button.innerHTML = `<strong>損傷${escapeHtml(matching.map(number => number.padStart(2, '0')).join('・'))}　${escapeHtml(row.memberName)} ${escapeHtml(row.memberSymbol)} ${escapeHtml(row.memberNumber)}</strong><span>${escapeHtml(row.damageType)}${row.damagePattern ? `　パターン ${escapeHtml(row.damagePattern)}` : ''}${row.classification ? `　分類 ${escapeHtml(row.classification)}` : ''}${row.damageLevel ? `　程度 ${escapeHtml(row.damageLevel)}` : ''}${row.diagnosis ? `　診断 ${escapeHtml(row.diagnosis)}` : ''}</span><small>${escapeHtml(row.comment)}</small>`;
-      button.addEventListener('click', () => attachAssessmentToDrawing(items, row));
+      const shownNumbers = matching.length ? matching : (row.damageNumbers || []);
+      button.innerHTML = `<strong>${shownNumbers.length ? `損傷${escapeHtml(shownNumbers.map(number => number.padStart(2, '0')).join('・'))}` : '損傷番号なし'}　${escapeHtml(row.memberName)} ${escapeHtml(row.memberSymbol)} ${escapeHtml(row.memberNumber)}</strong><span>${escapeHtml(row.damageType)}${row.damagePattern ? `　パターン ${escapeHtml(row.damagePattern)}` : ''}${row.classification ? `　分類 ${escapeHtml(row.classification)}` : ''}${row.damageLevel ? `　程度 ${escapeHtml(row.damageLevel)}` : ''}${row.diagnosis ? `　診断 ${escapeHtml(row.diagnosis)}` : ''}</span><small>${escapeHtml(row.comment)}</small>`;
+      button.addEventListener('click', () => showDrawingInfoPreview(row, '過年度評価表'));
       list.appendChild(button);
     }
+    $('drawingInfoGuide').textContent = '損傷番号がない行も含め、過年度評価表から1行選択してください。';
+  }
+  function renderInspectionDrawingCandidates() {
+    selectDrawingInfoSource('drawingSourceInspection');
+    const list = $('drawingCandidateList'); list.replaceChildren();
+    const candidates = damageListRows().filter(row => !pendingDrawingRegistration?.includes(row.drawing));
+    if (!candidates.length) list.innerHTML = '<div class="drawingCandidateEmpty">コピーできる点検結果がありません。</div>';
+    for (const row of candidates) {
+      const button = document.createElement('button'); button.className = 'drawingCandidate';
+      button.innerHTML = `<strong>損傷${escapeHtml(String(row.damageNumber || '').padStart(2, '0'))}　${escapeHtml(row.memberName)} ${escapeHtml(row.memberSymbol)} ${escapeHtml(row.memberNumber)}</strong><span>${escapeHtml(row.damageType)}　程度 ${escapeHtml(row.damageLevel)}</span><small>${escapeHtml(row.memo)}</small>`;
+      button.addEventListener('click', () => showDrawingInfoPreview({ ...row, damageNumbers: row.damageNumber ? [String(row.damageNumber)] : [], comment: row.memo }, '点検結果表'));
+      list.appendChild(button);
+    }
+    $('drawingInfoGuide').textContent = '登録済みの点検結果からコピーする行を選択してください。';
+  }
+  function renderDirectDrawingForm() {
+    selectDrawingInfoSource('drawingSourceDirect');
+    const list = $('drawingCandidateList'); list.replaceChildren();
+    const form = document.createElement('div'); form.className = 'drawingDirectForm';
+    const inputs = buildDrawingInfoInputs(form, { damageNumber: String(state.currentDamage?.damageNumber || '') });
+    const save = document.createElement('button'); save.textContent = '内容確認へ';
+    save.addEventListener('click', () => { const row = Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, cleanField(input.value)])); row.damageNumbers = row.damageNumber ? [String(Number(row.damageNumber))] : []; showDrawingInfoPreview(row, '直接入力'); });
+    form.appendChild(save); list.appendChild(form); $('drawingInfoGuide').textContent = '損傷情報を直接入力してください。';
+  }
+  function showDrawingRegistration(itemOrItems) {
+    const items = (Array.isArray(itemOrItems) ? itemOrItems : [itemOrItems]).filter(Boolean);
+    if (!items.length) return;
+    pendingDrawingRegistration = items;
+    renderAssessmentDrawingCandidates();
     $('drawingInfoDialog').classList.remove('hiddenPanel');
   }
   async function loadPastData(files) {
@@ -882,6 +1017,12 @@
     const box = svgNode('rect', { x: bounds.left, y: bounds.top, width: bounds.width, height: bounds.height, class: 'selectionBox' }); controls.appendChild(box);
     const positions = { nw: [bounds.left, bounds.top], n: [(bounds.left + bounds.right) / 2, bounds.top], ne: [bounds.right, bounds.top], e: [bounds.right, (bounds.top + bounds.bottom) / 2], se: [bounds.right, bounds.bottom], s: [(bounds.left + bounds.right) / 2, bounds.bottom], sw: [bounds.left, bounds.bottom], w: [bounds.left, (bounds.top + bounds.bottom) / 2] };
     for (const [handle, [x, y]] of Object.entries(positions)) controls.appendChild(svgNode('circle', { cx: x, cy: y, r: 3.5 / selectionZoom, class: 'selectionHandle', 'data-handle': handle }));
+    const leaderItem = selections.length === 1 ? annotationList(selections[0].key, selections[0].side)[selections[0].index] : null;
+    if (leaderItem?.type === 'leader') {
+      const tail = fittedLeaderTail(leaderItem, selections[0].side === 'photo' ? 1 / Math.max(.05, state.photo.zoom) : 1);
+      const leaderPoints = { tip: [leaderItem.x1, leaderItem.y1], elbow: [leaderItem.x2, leaderItem.y2], tail: [tail, leaderItem.y2] };
+      for (const [pointName, [x, y]] of Object.entries(leaderPoints)) controls.appendChild(svgNode('circle', { cx: x, cy: y, r: 4.5 / selectionZoom, class: 'leaderPointHandle', 'data-leader-point': pointName }));
+    }
     svg.appendChild(controls);
     const svgPoint = event => { const rect = svg.getBoundingClientRect(); return { x: (event.clientX - rect.left) / rect.width * 1000, y: (event.clientY - rect.top) / rect.height * 1000 }; };
     const beginTransform = event => {
@@ -919,6 +1060,36 @@
       controls.addEventListener('pointermove', move); controls.addEventListener('pointerup', finish); controls.addEventListener('pointercancel', finish);
     };
     box.addEventListener('pointerdown', beginTransform); controls.querySelectorAll('.selectionHandle').forEach(handle => handle.addEventListener('pointerdown', beginTransform));
+    controls.querySelectorAll('.leaderPointHandle').forEach(handle => handle.addEventListener('pointerdown', event => {
+      event.preventDefault(); event.stopPropagation();
+      const selection = selections[0], item = annotationList(selection.key, selection.side)[selection.index]; if (!item) return;
+      const original = JSON.parse(JSON.stringify(item)), pointName = event.target.dataset.leaderPoint, pointerId = event.pointerId;
+      controls.setPointerCapture(pointerId);
+      const lineNode = selectedNodes[0];
+      const move = moveEvent => {
+        if (moveEvent.pointerId !== pointerId) return;
+        const pointer = svgPoint(moveEvent);
+        if (pointName === 'tip') { item.x1 = pointer.x; item.y1 = pointer.y; }
+        else if (pointName === 'elbow') { item.x2 = pointer.x; item.y2 = pointer.y; }
+        else { item.x3 = pointer.x; item.leaderTailManual = true; }
+        const tail = fittedLeaderTail(item, selection.side === 'photo' ? 1 / Math.max(.05, state.photo.zoom) : 1);
+        lineNode.setAttribute('points', `${item.x1},${item.y1} ${item.x2},${item.y2} ${tail},${item.y2}`);
+        handle.setAttribute('cx', pointName === 'tip' ? item.x1 : pointName === 'elbow' ? item.x2 : tail);
+        handle.setAttribute('cy', pointName === 'tip' ? item.y1 : item.y2);
+        moveEvent.preventDefault();
+      };
+      const cleanup = () => { controls.removeEventListener('pointermove', move); controls.removeEventListener('pointerup', finish); controls.removeEventListener('pointercancel', cancel); };
+      const finish = upEvent => {
+        if (upEvent.pointerId !== pointerId) return; cleanup();
+        removeMirroredPhotoAnnotation(selection.key, original.id); if (selection.side === 'photo') mirrorPhotoRecordAnnotation(selection.wrap, selection.key, item);
+        $('annotationMiniMenu').classList.add('hiddenPanel'); state.selectedAnnotation = null; renderSide(selection.side);
+        if (selection.side === 'element' && !$('damageListPane').classList.contains('hiddenPanel')) renderDamageList();
+        $('globalStatus').textContent = pointName === 'tip' ? '矢印先端を移動しました' : pointName === 'elbow' ? '引き出し線の角を移動しました' : '水平線端を移動しました';
+        upEvent.preventDefault(); upEvent.stopPropagation();
+      };
+      const cancel = cancelEvent => { cleanup(); Object.keys(item).forEach(key => delete item[key]); Object.assign(item, original); state.selectedAnnotation = null; renderSide(selection.side); cancelEvent.preventDefault(); };
+      controls.addEventListener('pointermove', move); controls.addEventListener('pointerup', finish); controls.addEventListener('pointercancel', cancel);
+    }));
   }
   function restoreVisibleAnnotationSelection(side) {
     const selected = state.selectedAnnotation;
@@ -957,6 +1128,27 @@
     for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, String(value));
     return node;
   }
+  const annotationTextMeasureCanvas = document.createElement('canvas');
+  function measuredAnnotationTextWidth(text, fontSize) {
+    const context = annotationTextMeasureCanvas.getContext('2d');
+    if (!context) return String(text || '').length * fontSize * .72;
+    context.font = `700 ${fontSize}px -apple-system, BlinkMacSystemFont, "Noto Sans JP", sans-serif`;
+    return context.measureText(String(text || '')).width;
+  }
+  function splitLeaderText(text) {
+    const lines = String(text || '').split(/\s*\/\s*|\r?\n/).map(line => line.trim()).filter(Boolean);
+    return { damage: lines.filter(line => /^損傷\s*\d/.test(line)), upper: lines.filter(line => !/^損傷\s*\d/.test(line)) };
+  }
+  function fittedLeaderTail(item, displayFontScale = 1) {
+    const fallback = item.x3 ?? (item.x2 + (item.x2 >= item.x1 ? 120 : -120));
+    if (item.leaderTailManual && Number.isFinite(item.x3)) return item.x3;
+    if (!item.text) return fallback;
+    const direction = fallback >= item.x2 ? 1 : -1;
+    const fontSize = (item.fontSize || 18) * displayFontScale;
+    const parts = splitLeaderText(item.text), lines = [...parts.upper, ...parts.damage];
+    const textWidth = Math.max(0, ...lines.map(line => measuredAnnotationTextWidth(line, fontSize)));
+    return item.x2 + direction * Math.max(fontSize * 1.5, textWidth + fontSize * .35);
+  }
   function drawAnnotation(svg, item, displayFontScale = 1) {
     let node;
     const arrowMarkerUrl = `url(#${svg.dataset.arrowMarkerId || 'inspectionArrow'})`;
@@ -981,15 +1173,20 @@
     } else if (item.type === 'free') {
       node = svgNode('path', { d: (item.points || []).map((point, index) => `${index ? 'L' : 'M'} ${point.x} ${point.y}`).join(' ') });
     } else if (item.type === 'leader') {
-      const tail = item.x3 ?? (item.x2 + (item.x2 >= item.x1 ? 120 : -120));
+      const tail = fittedLeaderTail(item, displayFontScale);
       node = svgNode('polyline', { points: `${item.x1},${item.y1} ${item.x2},${item.y2} ${tail},${item.y2}`, 'marker-start': arrowMarkerUrl });
       if (item.text) {
         const fontSize = (item.fontSize || 18) * displayFontScale;
-        const label = svgNode('text', { x: Math.min(item.x2, tail) + 2, y: item.y2 - Math.max(1.5, fontSize * .22) });
-        label.textContent = item.text;
-        label.style.fill = item.color || '#e53935';
-        label.style.fontSize = `${fontSize}px`;
-        svg.appendChild(label);
+        const textX = Math.min(item.x2, tail) + fontSize * .12, parts = splitLeaderText(item.text);
+        const appendLabel = (text, y) => {
+          if (!text) return;
+          const label = svgNode('text', { x: textX, y }); label.textContent = text;
+          label.style.fill = item.color || '#e53935'; label.style.fontSize = `${fontSize}px`; svg.appendChild(label);
+        };
+        appendLabel(parts.upper.join(' / '), item.y2 - Math.max(1.5, fontSize * .22));
+        // Only the damage number follows CAD野帳's photo-number placement
+        // below the shelf. Member/damage descriptions remain above it.
+        appendLabel(parts.damage.join(' / '), item.y2 + fontSize * 1.05);
       }
     } else {
       node = svgNode('line', { x1: item.x1, y1: item.y1, x2: item.x2, y2: item.y2 });
@@ -1033,6 +1230,7 @@
       node.classList.add('selectableAnnotation');
       node.dataset.annotationIndex = String(index);
       node.addEventListener('click', event => {
+        if (svg.dataset.suppressAnnotationClick === 'true') { event.stopPropagation(); return; }
         if (state.drawMode !== 'select' || state.drawingSide !== side) return;
         event.stopPropagation(); showAnnotationMiniMenu(event, side, pageNumber, index, node);
       });
@@ -1041,9 +1239,13 @@
     let preview = null;
     let freePoints = null;
     let rangeSelecting = false;
+    let rangePending = false;
+    let leaderTip = null;
+    let leaderTipMarker = null;
     const cancelInProgressDrawing = () => {
       if (preview?.isConnected) preview.remove();
-      start = null; preview = null; freePoints = null; rangeSelecting = false;
+      if (leaderTipMarker?.isConnected) leaderTipMarker.remove();
+      start = null; preview = null; freePoints = null; rangeSelecting = false; rangePending = false; leaderTip = null; leaderTipMarker = null;
     };
     svg.addEventListener('inspection-pinchstart', cancelInProgressDrawing);
     const drawingStyle = () => ({ color: $('drawColor').value, width: Number($('drawWidth').value), fontSize: Number($('drawFontSize').value), dash: $('drawDash').value });
@@ -1073,10 +1275,14 @@
             $('globalStatus').textContent = `${sourceItems.length}個の作図を指定位置へコピーしました`;
             event.preventDefault();
           }
-        } else if (!event.target.closest('.selectableAnnotation') && state.drawingSide === side) {
-          start = point(event); rangeSelecting = true;
-          preview = svgNode('rect', { x: start.x, y: start.y, width: 0, height: 0 });
-          preview.classList.add('selectionMarquee'); svg.appendChild(preview);
+        } else if (state.drawingSide === side) {
+          start = point(event);
+          rangePending = Boolean(event.target.closest('.selectableAnnotation'));
+          rangeSelecting = !rangePending;
+          if (rangeSelecting) {
+            preview = svgNode('rect', { x: start.x, y: start.y, width: 0, height: 0 });
+            preview.classList.add('selectionMarquee'); svg.appendChild(preview);
+          }
           svg.setPointerCapture(event.pointerId); event.preventDefault();
         }
         return;
@@ -1084,6 +1290,24 @@
       if (state.drawingSide !== side) return;
       if (side === 'photo') state.activePhotoAnnotationKey = pageNumber;
       const p = point(event);
+      if (state.drawMode === 'leader') {
+        event.preventDefault(); event.stopPropagation();
+        if (!leaderTip) {
+          leaderTip = p;
+          leaderTipMarker = svgNode('circle', { cx: p.x, cy: p.y, r: 6 / Math.max(.1, state[side].zoom || 1), class: 'leaderTapMarker' });
+          svg.appendChild(leaderTipMarker);
+          $('globalStatus').textContent = '矢印先端を指定しました。次に水平線の位置をタップしてください';
+          return;
+        }
+        const style = drawingStyle();
+        const item = { id: annotationId(), type: 'leader', x1: leaderTip.x, y1: leaderTip.y, x2: p.x, y2: p.y, x3: p.x + (p.x >= leaderTip.x ? 120 : -120), text: '', ...style, damageInfo: null, annotationSide: side, annotationKey: pageNumber };
+        annotationList(pageNumber, side).push(item);
+        leaderTipMarker?.remove(); leaderTip = null; leaderTipMarker = null;
+        renderSide(side);
+        showDrawingRegistration(item); renderInspectionDrawingCandidates();
+        $('globalStatus').textContent = '点検結果表から引き出す内容を選択してください';
+        return;
+      }
       if (state.drawMode === 'boxedNumber') {
         event.preventDefault();
         const value = await requestBoxedNumber();
@@ -1119,8 +1343,15 @@
       event.preventDefault();
     });
     svg.addEventListener('pointermove', event => {
-      if (!start || !preview) return;
+      if (!start) return;
       const p = point(event);
+      if (rangePending) {
+        if (Math.hypot(p.x - start.x, p.y - start.y) < 6) return;
+        rangePending = false; rangeSelecting = true;
+        preview = svgNode('rect', { x: start.x, y: start.y, width: 0, height: 0 });
+        preview.classList.add('selectionMarquee'); svg.appendChild(preview);
+      }
+      if (!preview) return;
       if (rangeSelecting) {
         preview.setAttribute('x', Math.min(start.x, p.x)); preview.setAttribute('y', Math.min(start.y, p.y));
         preview.setAttribute('width', Math.abs(p.x - start.x)); preview.setAttribute('height', Math.abs(p.y - start.y));
@@ -1143,14 +1374,17 @@
     });
     svg.addEventListener('pointerup', event => {
       if (!start) return;
+      if (rangePending) { start = null; rangePending = false; return; }
       const p = point(event);
       if (rangeSelecting) {
         const left = Math.min(start.x, p.x), right = Math.max(start.x, p.x), top = Math.min(start.y, p.y), bottom = Math.max(start.y, p.y);
         const chosen = [...svg.querySelectorAll('.selectableAnnotation')].filter(node => {
           const box = node.getBBox(); return box.x + box.width >= left && box.x <= right && box.y + box.height >= top && box.y <= bottom;
         });
-        preview.remove(); start = null; preview = null; rangeSelecting = false;
+        preview.remove(); start = null; preview = null; rangeSelecting = false; rangePending = false;
         if (chosen.length) {
+          svg.dataset.suppressAnnotationClick = 'true';
+          setTimeout(() => delete svg.dataset.suppressAnnotationClick, 0);
           const selections = chosen.map(node => ({ side, key: pageNumber, index: Number(node.dataset.annotationIndex), wrap }));
           showAnnotationMiniMenu(event, side, pageNumber, selections[0].index, chosen[0], selections);
         }
@@ -1159,11 +1393,11 @@
       const item = { id: annotationId(), type: state.drawMode, x1: start.x, y1: start.y, x2: p.x, y2: p.y, ...drawingStyle(), damageInfo: side === 'element' ? null : annotationMetadata() };
       if (state.drawMode === 'free') item.points = freePoints?.length > 1 ? freePoints : [start, p];
       if (state.drawMode === 'leader') {
-        item.x3 = p.x + (p.x >= start.x ? 120 : -120);
         // Keep the tip at pointer-down, use pointer-up as the corner and add
         // the horizontal shelf in one gesture. Damage information is filled
         // automatically; free text remains available through the text tool.
         item.text = automaticLeaderText();
+        item.x3 = fittedLeaderTail({ ...item, x3: p.x + (p.x >= start.x ? 120 : -120) });
       }
       if (state.drawMode === 'screenCopy' && side === 'element') {
         start = null; preview?.remove(); preview = null; freePoints = null;
@@ -1367,6 +1601,9 @@
     // viewer so it can offer merging with this existing hotspot.
     if (state.pendingManualDamage) return;
     event.stopPropagation();
+    // iPad emits a synthetic click after a two-finger gesture when either
+    // finger began on a button. Never treat that click as a damage selection.
+    if (performance.now() < state.suppressHotspotUntil) return;
     if (anchor.dataset.justDragged === 'true') { anchor.dataset.justDragged = 'false'; return; }
     if (state.hotspotEditMode) { openHotspotEditor(anchor); return; }
     const groupedNumbers = (anchor.dataset.numbers || '').split(',').filter(Boolean);
@@ -2606,6 +2843,8 @@
     viewer.addEventListener('touchstart', event => {
       if (event.touches.length !== 2) return;
       gestureRevision++;
+      state.suppressHotspotUntil = performance.now() + 1000;
+      viewer.classList.add('pinchZooming');
       viewer.querySelectorAll('.annotationLayer').forEach(layer => layer.dispatchEvent(new Event('inspection-pinchstart')));
       pinchStartDistance = distance(event.touches);
       pinchStartZoom = target.zoom;
@@ -2643,6 +2882,7 @@
       clearPreview();
       await restoreAnchor(anchor);
       pinchAnchor = null;
+      setTimeout(() => viewer.classList.remove('pinchZooming'), 350);
     };
     viewer.addEventListener('touchend', finishPinch, { passive: true });
     viewer.addEventListener('touchcancel', finishPinch, { passive: true });
@@ -3061,6 +3301,9 @@
   $('showAssessmentList').addEventListener('click', () => { renderAssessmentList(); $('assessmentListPane').classList.remove('hiddenPanel'); refitAfterTopPanelChange(); });
   $('assessmentListClose').addEventListener('click', () => { $('assessmentListPane').classList.add('hiddenPanel'); refitAfterTopPanelChange(); });
   $('drawingInfoClose').addEventListener('click', closeDrawingRegistration);
+  $('drawingSourceAssessment').addEventListener('click', renderAssessmentDrawingCandidates);
+  $('drawingSourceInspection').addEventListener('click', renderInspectionDrawingCandidates);
+  $('drawingSourceDirect').addEventListener('click', renderDirectDrawingForm);
   $('drawingInfoNone').addEventListener('click', () => {
     for (const item of pendingDrawingRegistration || []) item.damageInfo = null;
     closeDrawingRegistration();
