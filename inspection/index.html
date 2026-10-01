@@ -7,18 +7,18 @@
     // OCR uses Web Workers and WASM, which browsers block on file:// pages.
     // When this HTML is opened directly, switch to the local web server where
     // the exact same files can run with a normal HTTP origin.
-    if (location.protocol === 'file:') location.replace('http://127.0.0.1:8098/inspection/index.html?v=404');
+    if (location.protocol === 'file:') location.replace('http://127.0.0.1:8098/inspection/index.html?v=415');
   </script>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>点検モード | CAD野帳</title>
-  <link rel="stylesheet" href="inspection.css?v=404">
+  <link rel="stylesheet" href="inspection.css?v=422">
 </head>
 <body>
   <header>
     <button id="backButton" class="subtle">← CAD野帳へ戻る</button>
     <strong>点検モード</strong>
     <span id="globalStatus">左右のPDFを読み込んでください</span>
-    <div class="headerTools"><button id="recognitionResults" class="subtle hiddenPanel">未認識</button><button id="addHotspot" class="subtle">枠追加</button><button id="hotspotEditMode" class="subtle" aria-pressed="false">枠編集</button><button id="topPhotoToggle" class="subtle">写真</button><button id="topDrawToggle" class="subtle">作図</button><button id="topDamageList" class="subtle">点検結果</button><button id="drawingCsv" class="subtle">CSV</button><span id="networkStatus">オンライン</span></div>
+    <div class="headerTools"><button id="recognitionResults" class="subtle hiddenPanel">未認識</button><button id="addHotspot" class="subtle">枠追加</button><button id="hotspotEditMode" class="subtle" aria-pressed="false">枠編集</button><button id="topPhotoToggle" class="subtle">写真</button><button id="topDrawToggle" class="subtle">作図</button><button id="topLeaderSettings" class="subtle">設定</button><button id="topDamageList" class="subtle">点検結果</button><button id="drawingCsv" class="subtle">CSV</button><span id="networkStatus">オンライン</span></div>
   </header>
   <div id="commonDrawTools" class="commonDrawTools hiddenPanel">
     <div class="drawTarget"><span>作図先</span><button id="drawTargetElement" class="active">要素番号図</button><button id="drawTargetPhoto">損傷写真</button></div>
@@ -38,7 +38,7 @@
       </div>
       <div class="viewer" id="elementViewer"><div class="empty">左側に部材要素番号図を表示します</div></div>
       <nav>
-        <button id="elementPrev">◀ 前</button><span id="elementPage">- / -</span><button id="elementNext">次 ▶</button>
+        <button id="elementPrev">◀ 前</button><span id="elementPage">- / -</span><button id="elementNext">次 ▶</button><button id="elementAddBlank" title="最後に白紙ページを追加">＋ 白紙ページ</button>
       </nav>
     </section>
     <div id="paneDivider" role="separator" aria-label="左右の表示幅を変更" aria-orientation="vertical"></div>
@@ -75,7 +75,7 @@
   </aside>
   <aside id="recognitionResultPane" class="recognitionResultPane hiddenPanel" aria-label="損傷番号の確認結果"><div class="recognitionResultHeader"><strong>損傷番号の確認結果</strong><button id="recognitionResultClose">閉じる</button></div><p id="recognitionResultSummary"></p><div id="recognitionResultList"></div></aside>
   <aside id="hotspotEditor" class="hotspotEditor hiddenPanel" aria-label="オレンジ枠の編集"><div><strong>オレンジ枠を編集</strong><button id="hotspotEditorClose">閉じる</button></div><label>損傷番号<input id="hotspotNumberInput" inputmode="numeric" placeholder="例：01 または 16,17"></label><p>枠の移動は、図面上のオレンジ枠をドラッグします。</p><div class="hotspotEditorActions"><button id="hotspotNumberSave">番号を修正</button><button id="hotspotDelete" class="dangerButton">枠を削除</button></div></aside>
-  <div id="annotationMiniMenu" class="annotationMiniMenu hiddenPanel"><span id="annotationSelectionCount">1個</span><button id="annotationDamageInfo">損傷情報登録</button><button id="annotationCopy">コピー</button><button id="annotationShrink">縮小</button><button id="annotationGrow">拡大</button><button id="annotationDelete" class="dangerButton">消去</button></div>
+  <div id="annotationMiniMenu" class="annotationMiniMenu hiddenPanel"><span id="annotationSelectionCount">1個</span><button id="annotationDamageInfo">損傷情報登録</button><button id="annotationPropertiesToggle">プロパティ</button><button id="annotationLeaderReverse" class="hiddenPanel" title="引き出し水平線を反対側へ">水平線の向き切替</button><button id="annotationLeaderTextSmaller" class="hiddenPanel" title="引き出し文字を小さく">A− 小さく</button><button id="annotationLeaderTextLarger" class="hiddenPanel" title="引き出し文字を大きく">A＋ 大きく</button><button id="annotationCopy">コピー</button><button id="annotationShrink">縮小</button><button id="annotationGrow">拡大</button><button id="annotationDelete" class="dangerButton">消去</button><div id="annotationPropertyPanel" class="annotationPropertyPanel hiddenPanel"><label>色<input id="annotationColor" type="color" aria-label="選択作図の色"></label><div id="annotationBasicColors" class="annotationBasicColors" aria-label="基本色"><button type="button" data-color="#e53935" title="赤"></button><button type="button" data-color="#1565c0" title="青"></button><button type="button" data-color="#2e7d32" title="緑"></button><button type="button" data-color="#f57c00" title="オレンジ"></button></div><label>線幅<select id="annotationWidth" aria-label="選択作図の線幅"><option value="1.5">細</option><option value="3">標準</option><option value="5">太</option><option value="8">極太</option></select></label><label>線種類<select id="annotationDash" aria-label="選択作図の線種類"><option value="">実線</option><option value="12 7">破線</option><option value="2 6">点線</option><option value="14 5 2 5">一点鎖線</option></select></label></div></div>
   <div id="hotspotAddDialog" class="drawingInfoBackdrop hiddenPanel" role="dialog" aria-modal="true" aria-label="オレンジ枠を追加"><section class="hotspotAddCard"><strong>オレンジ枠を追加</strong><label>径間番号<input id="addHotspotSpan" inputmode="numeric" placeholder="例：1"></label><label>損傷番号<input id="addHotspotNumber" inputmode="numeric" placeholder="例：01 または 16,17"></label><p>登録後、表示中の要素番号図で枠の位置をタップします。</p><div><button id="addHotspotCancel">取消</button><button id="addHotspotStart">位置を指定</button></div></section></div>
   <div id="drawingInfoDialog" class="drawingInfoBackdrop hiddenPanel" role="dialog" aria-modal="true" aria-label="作図情報の登録">
     <section class="drawingInfoCard"><div class="drawingInfoHeader"><strong>損傷情報を登録</strong><button id="drawingInfoClose">閉じる</button></div><div class="drawingInfoSources"><button id="drawingSourceAssessment" class="active">過年度評価表</button><button id="drawingSourceInspection">点検結果表</button><button id="drawingSourceDirect">直接入力</button></div><p id="drawingInfoGuide">登録元を選び、選択中の作図へコピーする行を選んでください。</p><div id="drawingCandidateList" class="drawingCandidateList"></div><button id="drawingInfoNone" class="drawingInfoNone">損傷情報を解除</button></section>
@@ -87,6 +87,6 @@
   <div id="memoChoiceDialog" class="drawingInfoBackdrop hiddenPanel" role="dialog" aria-modal="true" aria-label="メモの入力方法"><section class="drawingInfoCard"><div class="drawingInfoHeader"><strong>メモの入力方法</strong><button id="memoChoiceClose">閉じる</button></div><div class="memoChoiceActions"><button id="memoDirectInput">直接記入</button></div><p>コピーする内容を選択してください。</p><div id="memoChoiceList" class="drawingCandidateList"></div></section></div>
   <script src="../pdfjs/pdf.min.js"></script>
   <script src="../tesseract/tesseract.min.js"></script>
-  <script src="inspection.js?v=404"></script>
+  <script src="inspection.js?v=422"></script>
 </body>
 </html>

@@ -20,7 +20,7 @@
     Math.sqrt(64000000 / Math.max(1, width * height * scale * scale))
   ));
   const state = {
-    element: { doc: null, page: 1, viewer: $('elementViewer'), label: $('elementPage'), zoom: 1, focus: null },
+    element: { doc: null, page: 1, blankPages: 0, blankPageSize: { width: 1000, height: 707 }, viewer: $('elementViewer'), label: $('elementPage'), zoom: 1, focus: null },
     photo: { doc: null, page: 1, viewer: $('photoViewer'), label: $('photoPage'), zoom: 1, focus: null, matches: null, pageOverview: false, fitPaneAfterRender: false, dockMode: 'free' },
     photoIndex: new Map(), damageNumberDigits: 2, assessmentIndex: new Map(), assessmentRows: [], assessmentDoc: null, assessmentFocusNumbers: [], assessmentFocusSpan: '', currentDamage: null, renderToken: { element: 0, photo: 0 }, renderTasks: { element: null, photo: null }, elementTextContent: new Map(),
     ocrWorker: null, ocrHotspots: new Map(), textDamageNumbers: new Map(), elementSpanNumbers: new Map(), ocrJobs: new Map(), ocrProgress: null, missingDamageNumbers: [], missingPhotoNumbers: [], ignoredMissing: new Set(), manualHotspots: new Map(), hotspotOverrides: new Map(), pendingManualDamage: null,
@@ -75,10 +75,12 @@
     const damage = [record.damageType, record.damageLevel].filter(Boolean).join(' ');
     return [member, damage, `損傷${String(info.damageNumber || '').padStart(2, '0')}`].filter(Boolean).join(' / ');
   }
-  const defaultLeaderFields = ['memberName', 'memberNumber', 'damageType', 'damageLevel', 'damageNumber'];
-  function leaderTextFromRow(row, damageNumber, fields = defaultLeaderFields) {
+  const defaultLeaderFields = ['memberName', 'memberNumber', 'damageType', 'damageNumber'];
+  function leaderTextFromRow(row, damageNumber, fields = defaultLeaderFields, memberDigits = 4) {
     const enabled = new Set(fields || defaultLeaderFields), upper = [];
-    const member = [enabled.has('memberName') && row.memberName, enabled.has('memberNumber') && row.memberNumber].filter(Boolean).join(' ');
+    const rawMemberNumber = normalizeDigits(String(row.memberNumber || ''));
+    const shownMemberNumber = /^\d+$/.test(rawMemberNumber) ? rawMemberNumber.slice(-memberDigits) : rawMemberNumber;
+    const member = [enabled.has('memberName') && row.memberName, enabled.has('memberNumber') && shownMemberNumber].filter(Boolean).join(' ');
     const damage = [enabled.has('damageType') && row.damageType, enabled.has('damageLevel') && row.damageLevel].filter(Boolean).join(' ');
     if (member) upper.push(member); if (damage) upper.push(damage);
     if (enabled.has('damageNumber') && damageNumber !== '') upper.push(`損傷${String(damageNumber).padStart(2, '0')}`);
@@ -157,6 +159,12 @@
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       target.doc = await pdfjsLib.getDocument({ data: bytes, ...pdfOptions }).promise;
+      if (side === 'element') {
+        target.blankPages = 0;
+        const firstPage = await target.doc.getPage(1);
+        const firstSize = firstPage.getViewport({ scale: 1 });
+        target.blankPageSize = { width: firstSize.width, height: firstSize.height };
+      }
       const requestedPage = Number(new URLSearchParams(location.search).get(`${side}Page`));
       target.page = Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
       target.zoom = 1;
@@ -440,38 +448,60 @@
     pendingDrawingRegistration = null;
     $('drawingInfoDialog').classList.add('hiddenPanel');
   }
-  function attachAssessmentToDrawing(itemOrItems, row) {
+  function drawingRegistrationError(message) {
+    $('drawingInfoGuide').textContent = message;
+    $('drawingInfoGuide').classList.add('drawingInfoGuideError');
+    $('globalStatus').textContent = message;
+  }
+  function sameDrawingMember(rows) {
+    const keys = rows.map(row => `${cleanField(row.memberName || '')}\u0000${cleanField(row.memberNumber || '')}`);
+    return new Set(keys).size <= 1;
+  }
+  function attachAssessmentToDrawing(itemOrItems, rowOrRows) {
     const items = Array.isArray(itemOrItems) ? itemOrItems : [itemOrItems];
+    const rows = (Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows]).filter(Boolean);
+    if (!rows.length) return;
+    if (!sameDrawingMember(rows)) {
+      drawingRegistrationError('部材名称または要素番号が異なるため、同じ作図には登録できません。作図を分けて登録してください。');
+      return;
+    }
+    const row = rows[0];
     const visible = visibleElementDamageNumbers();
     const rowNumbers = row.damageNumbers?.length ? row.damageNumbers.map(String) : (row.damageNumber ? [String(row.damageNumber)] : []);
     const matches = rowNumbers.filter(number => visible.has(number));
     const current = String(state.currentDamage?.damageNumber || '');
     const damageNumber = matches.includes(current) ? current : (matches[0] || rowNumbers[0] || current || [...visible][0] || '');
-    const photoEntries = state.photoIndex.get(String(damageNumber)) || [];
-    // One assessment row represents one inspection-result row. A damage
-    // number may have several indexed photos, so choose only the closest
-    // matching photo record instead of duplicating the selected assessment.
-    const scorePhotoEntry = entry => {
+    const scorePhotoEntry = (entry, sourceRow) => {
       const source = entry.record || {}; let score = 0;
-      if (row.spanNumber && String(source.spanNumber || '') === String(row.spanNumber)) score += 8;
-      if (row.memberSymbol && source.memberSymbol === row.memberSymbol) score += 4;
-      if (row.memberNumber && source.memberNumber === row.memberNumber) score += 3;
-      if (row.damageType && source.damageType === row.damageType) score += 2;
+      if (sourceRow.spanNumber && String(source.spanNumber || '') === String(sourceRow.spanNumber)) score += 8;
+      if (sourceRow.memberSymbol && source.memberSymbol === sourceRow.memberSymbol) score += 4;
+      if (sourceRow.memberNumber && source.memberNumber === sourceRow.memberNumber) score += 3;
+      if (sourceRow.damageType && source.damageType === sourceRow.damageType) score += 2;
       return score;
     };
-    const bestPhoto = [...photoEntries].sort((a, b) => scorePhotoEntry(b) - scorePhotoEntry(a))[0];
-    const sourceRecords = [bestPhoto?.record || {}];
+    const sourceRecords = rows.map(sourceRow => {
+      const sourceNumbers = sourceRow.damageNumbers?.length ? sourceRow.damageNumbers.map(String) : (sourceRow.damageNumber ? [String(sourceRow.damageNumber)] : []);
+      const sourceNumber = sourceNumbers.find(number => visible.has(number)) || sourceNumbers[0] || damageNumber;
+      const photoEntries = state.photoIndex.get(String(sourceNumber)) || [];
+      const bestPhoto = [...photoEntries].sort((a, b) => scorePhotoEntry(b, sourceRow) - scorePhotoEntry(a, sourceRow))[0];
+      const source = bestPhoto?.record || {};
+      return { ...source,
+        damageNumber: String(sourceNumber || source.damageNumber || ''), spanNumber: sourceRow.spanNumber || source.spanNumber || '',
+        memberName: sourceRow.memberName || source.memberName || '', memberSymbol: sourceRow.memberSymbol || source.memberSymbol || '',
+        memberNumber: sourceRow.memberNumber || source.memberNumber || '', damageType: sourceRow.damageType || source.damageType || '',
+        damagePattern: sourceRow.damagePattern || source.damagePattern || '', classification: sourceRow.classification || source.classification || '', damageLevel: sourceRow.damageLevel || source.damageLevel || '', diagnosis: sourceRow.diagnosis || source.diagnosis || '', memo: sourceRow.comment || sourceRow.memo || source.memo || '', assessmentPage: sourceRow.pageNumber
+      };
+    });
     for (const item of items) {
       item.damageInfo = {
         damageNumber: String(damageNumber || ''), elementPage: state.element.page,
-        records: sourceRecords.map(source => ({ ...source,
-          damageNumber: String(damageNumber || source.damageNumber || ''), spanNumber: row.spanNumber || source.spanNumber || '',
-          memberName: row.memberName || source.memberName || '', memberSymbol: row.memberSymbol || source.memberSymbol || '',
-          memberNumber: row.memberNumber || source.memberNumber || '', damageType: row.damageType || source.damageType || '',
-          damagePattern: row.damagePattern || source.damagePattern || '', classification: row.classification || source.classification || '', damageLevel: row.damageLevel || source.damageLevel || '', diagnosis: row.diagnosis || source.diagnosis || '', memo: row.comment || row.memo || source.memo || '', assessmentPage: row.pageNumber
-        }))
+        records: sourceRecords
       };
-      if (item.type === 'leader') item.text = leaderTextFromRow(row, damageNumber, row._leaderFields);
+      if (item.type === 'leader') {
+        item.leaderFields = row._leaderFields || item.leaderFields || defaultLeaderFields;
+        item.memberDigits = row._memberDigits || item.memberDigits || 4;
+        item.text = leaderTextFromRow(row, damageNumber, item.leaderFields, item.memberDigits);
+      }
       if (item.type === 'leader' && item.annotationSide === 'photo' && item.annotationKey) {
         removeMirroredPhotoAnnotation(item.annotationKey, item.id);
         const layer = [...state.photo.viewer.querySelectorAll('.annotationLayer')].find(candidate => candidate.dataset.annotationKey === String(item.annotationKey));
@@ -482,7 +512,7 @@
     const changedSides = new Set(items.map(item => item.annotationSide).filter(Boolean));
     changedSides.forEach(side => renderSide(side));
     if (!$('damageListPane').classList.contains('hiddenPanel')) renderDamageList();
-    $('globalStatus').textContent = `${items.length}個の作図に損傷${String(damageNumber).padStart(2, '0')}の評価情報を登録しました`;
+    $('globalStatus').textContent = `${items.length}個の作図に${rows.length}件の損傷情報を登録しました`;
   }
   function selectDrawingInfoSource(active) {
     for (const id of ['drawingSourceAssessment', 'drawingSourceInspection', 'drawingSourceDirect']) $(id).classList.toggle('active', id === active);
@@ -542,56 +572,124 @@
     const rowNumber = row.damageNumber || row.damageNumbers?.[0];
     return String(rowNumber || state.currentDamage?.damageNumber || [...visibleElementDamageNumbers()][0] || '');
   }
-  function showDrawingInfoPreview(sourceRow, sourceLabel) {
+  function showDrawingInfoPreview(sourceRowOrRows, sourceLabel) {
+    const sourceRows = (Array.isArray(sourceRowOrRows) ? sourceRowOrRows : [sourceRowOrRows]).filter(Boolean);
+    if (!sourceRows.length) return;
+    if (!sameDrawingMember(sourceRows)) {
+      drawingRegistrationError('部材名称または要素番号が異なる行は一緒に登録できません。作図を分けてください。');
+      return;
+    }
     const list = $('drawingCandidateList'); list.replaceChildren();
     document.querySelectorAll('.drawingInfoSources button').forEach(button => button.classList.remove('active'));
-    const form = document.createElement('div'); form.className = 'drawingDirectForm drawingInfoPreview';
-    const inputs = buildDrawingInfoInputs(form, sourceRow);
+    const preview = document.createElement('div'); preview.className = 'drawingInfoPreview';
+    const rowInputs = sourceRows.map((sourceRow, index) => {
+      const form = document.createElement('div'); form.className = 'drawingDirectForm';
+      const heading = document.createElement('strong'); heading.className = 'wide'; heading.textContent = `登録内容 ${index + 1}`; form.appendChild(heading);
+      const inputs = buildDrawingInfoInputs(form, sourceRow); preview.appendChild(form);
+      return { sourceRow, inputs };
+    });
     let leaderFieldInputs = null;
     if ((pendingDrawingRegistration || []).some(item => item.type === 'leader')) {
       const chooser = document.createElement('fieldset'); chooser.className = 'leaderContentChooser wide';
       const legend = document.createElement('legend'); legend.textContent = '引き出し線へ表示する内容'; chooser.appendChild(legend);
       leaderFieldInputs = {};
-      for (const [name, labelText] of [['memberName','部材名称'],['memberNumber','要素番号'],['damageType','損傷の種類'],['damageLevel','損傷程度'],['damageNumber','損傷番号']]) {
+      for (const [name, labelText] of [['memberName','部材名称'],['memberNumber','部材番号'],['damageType','損傷の種類'],['damageNumber','損傷番号']]) {
         const label = document.createElement('label'), checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = true;
         leaderFieldInputs[name] = checkbox; label.append(checkbox, labelText); chooser.appendChild(label);
       }
-      form.appendChild(chooser);
+      const digitsLabel = document.createElement('label'); digitsLabel.textContent = '部材番号の表示';
+      const digitsSelect = document.createElement('select');
+      for (const digits of [2, 3, 4]) { const option = document.createElement('option'); option.value = String(digits); option.textContent = `${digits}桁`; digitsSelect.appendChild(option); }
+      digitsSelect.value = '4'; leaderFieldInputs._memberDigits = digitsSelect; digitsLabel.appendChild(digitsSelect); chooser.appendChild(digitsLabel);
+      preview.appendChild(chooser);
     }
     const register = document.createElement('button'); register.textContent = '確認した内容を登録';
     register.addEventListener('click', () => {
-      const edited = Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, cleanField(input.value)]));
-      const normalizedNumber = normalizeDigits(edited.damageNumber).match(/\d+/)?.[0] || '';
-      edited.damageNumber = normalizedNumber ? String(Number(normalizedNumber)) : '';
-      edited.damageNumbers = edited.damageNumber ? [edited.damageNumber] : [];
-      if (leaderFieldInputs) edited._leaderFields = Object.entries(leaderFieldInputs).filter(([, input]) => input.checked).map(([name]) => name);
-      edited.pageNumber = sourceRow.pageNumber;
-      attachAssessmentToDrawing(pendingDrawingRegistration, edited);
+      const editedRows = rowInputs.map(({ sourceRow, inputs }) => {
+        const edited = Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, cleanField(input.value)]));
+        const normalizedNumber = normalizeDigits(edited.damageNumber).match(/\d+/)?.[0] || '';
+        edited.damageNumber = normalizedNumber ? String(Number(normalizedNumber)) : '';
+        edited.damageNumbers = edited.damageNumber ? [edited.damageNumber] : [];
+        edited.pageNumber = sourceRow.pageNumber;
+        return edited;
+      });
+      if (!sameDrawingMember(editedRows)) {
+        drawingRegistrationError('部材名称または要素番号が異なるため登録できません。作図を分けてください。');
+        return;
+      }
+      if (leaderFieldInputs) {
+        editedRows[0]._leaderFields = Object.entries(leaderFieldInputs).filter(([name, input]) => name !== '_memberDigits' && input.checked).map(([name]) => name);
+        editedRows[0]._memberDigits = Number(leaderFieldInputs._memberDigits.value);
+      }
+      attachAssessmentToDrawing(pendingDrawingRegistration, editedRows);
     });
-    form.appendChild(register); list.appendChild(form);
-    $('drawingInfoGuide').textContent = `${sourceLabel}から読み込んだ内容です。各セルを修正してから登録してください。`;
+    preview.appendChild(register); list.appendChild(preview);
+    $('drawingInfoGuide').classList.remove('drawingInfoGuideError');
+    $('drawingInfoGuide').textContent = `${sourceLabel}から${sourceRows.length}件読み込みました。各セルを修正してから登録してください。`;
   }
   function renderAssessmentDrawingCandidates() {
     selectDrawingInfoSource('drawingSourceAssessment');
     const visible = visibleElementDamageNumbers();
-    const current = String(state.currentDamage?.damageNumber || '');
-    const candidates = [...state.assessmentRows]
-      .sort((a, b) => Number(!(a.damageNumbers || []).includes(current)) - Number(!(b.damageNumbers || []).includes(current)) || Number(a.memberNumber) - Number(b.memberNumber));
+    for (const number of elementDamageNumbersForPage(state.element.page)) visible.add(number);
+    const normalizedNumber = number => String(Number(number));
+    const pageNumbers = new Set([...visible].map(normalizedNumber));
+    const current = normalizedNumber(state.currentDamage?.damageNumber || 0);
+    const span = String(state.elementSpanNumbers.get(state.element.page) || '');
+    const sameSpan = row => !span || !row.spanNumber || String(row.spanNumber) === span;
+    const memberKey = name => cleanField(name).replace(/[\s　]/g, '');
+    const matchingRows = state.assessmentRows.filter(row => sameSpan(row) && (row.damageNumbers || []).some(number => pageNumbers.has(normalizedNumber(number))));
+    const memberNames = new Set(matchingRows.map(row => memberKey(row.memberName)).filter(Boolean));
+    const focused = memberNames.size
+      ? state.assessmentRows.filter(row => sameSpan(row) && memberNames.has(memberKey(row.memberName)))
+      : matchingRows;
+    const sortCandidates = rows => [...rows]
+      .sort((a, b) => Number(!(a.damageNumbers || []).some(number => normalizedNumber(number) === current)) - Number(!(b.damageNumbers || []).some(number => normalizedNumber(number) === current)) || Number(a.memberNumber) - Number(b.memberNumber));
     const list = $('drawingCandidateList'); list.replaceChildren();
-    if (!candidates.length) {
-      const empty = document.createElement('div'); empty.className = 'drawingCandidateEmpty';
-      empty.textContent = '損傷程度の評価PDFが読み込まれていません';
-      list.appendChild(empty);
-    }
-    for (const row of candidates) {
+    const selectedRows = new Set();
+    const selectedCount = document.createElement('strong'); selectedCount.textContent = '0件選択';
+    function paint(showAll = false) {
+      list.replaceChildren();
+      const candidates = sortCandidates(showAll ? state.assessmentRows : focused);
+      if (state.assessmentRows.length) {
+        const filter = document.createElement('div'); filter.className = 'drawingCandidateActions';
+        const summary = document.createElement('span');
+        summary.textContent = showAll ? `全${state.assessmentRows.length}件` : memberNames.size ? `この要素図の部材: ${[...memberNames].join('・')}（${candidates.length}件）` : `この要素図に対応する評価: ${candidates.length}件`;
+        const toggle = document.createElement('button'); toggle.type = 'button';
+        toggle.textContent = showAll ? '絞り込みに戻す' : '全件表示';
+        toggle.addEventListener('click', () => paint(!showAll));
+        filter.append(summary, toggle); list.appendChild(filter);
+      }
+      if (!candidates.length) {
+        const empty = document.createElement('div'); empty.className = 'drawingCandidateEmpty';
+        empty.textContent = state.assessmentRows.length ? '該当する評価行がありません。必要なら全件表示で探してください。' : '損傷程度の評価PDFが読み込まれていません';
+        list.appendChild(empty);
+      }
+      for (const row of candidates) {
       const button = document.createElement('button'); button.className = 'drawingCandidate';
-      const matching = (row.damageNumbers || []).filter(number => visible.has(number));
+      const matching = (row.damageNumbers || []).filter(number => pageNumbers.has(normalizedNumber(number)));
       const shownNumbers = matching.length ? matching : (row.damageNumbers || []);
       button.innerHTML = `<strong>${shownNumbers.length ? `損傷${escapeHtml(shownNumbers.map(number => number.padStart(2, '0')).join('・'))}` : '損傷番号なし'}　${escapeHtml(row.memberName)} ${escapeHtml(row.memberSymbol)} ${escapeHtml(row.memberNumber)}</strong><span>${escapeHtml(row.damageType)}${row.damagePattern ? `　パターン ${escapeHtml(row.damagePattern)}` : ''}${row.classification ? `　分類 ${escapeHtml(row.classification)}` : ''}${row.damageLevel ? `　程度 ${escapeHtml(row.damageLevel)}` : ''}${row.diagnosis ? `　診断 ${escapeHtml(row.diagnosis)}` : ''}</span><small>${escapeHtml(row.comment)}</small>`;
-      button.addEventListener('click', () => showDrawingInfoPreview(row, '過年度評価表'));
+      button.classList.toggle('selected', selectedRows.has(row));
+      button.addEventListener('click', () => {
+        if (selectedRows.has(row)) selectedRows.delete(row); else selectedRows.add(row);
+        button.classList.toggle('selected', selectedRows.has(row));
+        selectedCount.textContent = `${selectedRows.size}件選択`;
+      });
       list.appendChild(button);
+      }
+    const actions = document.createElement('div'); actions.className = 'drawingCandidateActions';
+    const confirm = document.createElement('button'); confirm.textContent = '選択内容を確認';
+    confirm.addEventListener('click', () => {
+      const rows = [...selectedRows];
+      if (!rows.length) { drawingRegistrationError('登録する過年度評価を1件以上選択してください。'); return; }
+      if (!sameDrawingMember(rows)) { drawingRegistrationError('部材名称または要素番号が異なる行は一緒に登録できません。作図を分けてください。'); return; }
+      showDrawingInfoPreview(rows, '過年度評価表');
+    });
+    actions.append(selectedCount, confirm); list.appendChild(actions);
     }
-    $('drawingInfoGuide').textContent = '損傷番号がない行も含め、過年度評価表から1行選択してください。';
+    paint();
+    $('drawingInfoGuide').classList.remove('drawingInfoGuideError');
+    $('drawingInfoGuide').textContent = '表示中の要素図の損傷番号から部材名称を特定し、その部材の評価を表示しています。同じ作図へ複数登録する場合は、部材名称と要素番号が同じ行を選択してください。';
   }
   function renderInspectionDrawingCandidates() {
     selectDrawingInfoSource('drawingSourceInspection');
@@ -643,15 +741,35 @@
   }
   async function renderSide(side) {
     const target = state[side];
-    if (!target.doc) return;
+    if (!target.doc && !(side === 'element' && target.blankPages)) return;
     if (side === 'photo' && target.matches?.length) {
       if (target.pageOverview) await renderPhotoOverviewPages();
       else await renderPhotoMatches();
       return;
     }
     if (side === 'photo') target.viewer.classList.remove('matchedPhotos', 'zoomed');
-    target.page = Math.max(1, Math.min(target.doc.numPages, target.page));
+    const pdfPageCount = target.doc?.numPages || 0;
+    const pageCount = pdfPageCount + (side === 'element' ? target.blankPages : 0);
+    target.page = Math.max(1, Math.min(pageCount, target.page));
     const token = ++state.renderToken[side];
+    if (side === 'element' && target.page > pdfPageCount) {
+      const size = target.blankPageSize;
+      const available = Math.max(320, target.viewer.clientWidth - 18);
+      const cssScale = available / size.width * target.zoom;
+      const wrap = document.createElement('div'); wrap.className = 'pageWrap blankPage';
+      wrap.dataset.page = String(target.page);
+      wrap.style.width = `${size.width * cssScale}px`; wrap.style.height = `${size.height * cssScale}px`;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.ceil(size.width * cssScale); canvas.height = Math.ceil(size.height * cssScale);
+      canvas.getContext('2d').fillStyle = '#fff'; canvas.getContext('2d').fillRect(0, 0, canvas.width, canvas.height);
+      wrap.appendChild(canvas);
+      if (token !== state.renderToken[side]) return;
+      target.viewer.replaceChildren(wrap);
+      target.label.textContent = `${target.page} / ${pageCount}（白紙）`;
+      $('elementZoomLabel').textContent = `${Math.round(target.zoom * 100)}%`;
+      addDrawingLayer(wrap, target.page);
+      return;
+    }
     const page = await target.doc.getPage(target.page);
     if (token !== state.renderToken[side]) return;
     const base = page.getViewport({ scale: 1 });
@@ -695,7 +813,7 @@
     // Keep the old page visible while the new canvas is rendered. Replacing
     // the DOM earlier temporarily resets scrolling to the top-left.
     target.viewer.replaceChildren(wrap);
-    target.label.textContent = `${target.page} / ${target.doc.numPages}`;
+    target.label.textContent = `${target.page} / ${pageCount}`;
     $(side + 'ZoomLabel').textContent = `${Math.round(target.zoom * 100)}%`;
       if (side === 'element') {
         addDrawingLayer(wrap, target.page);
@@ -967,21 +1085,24 @@
       if (Number.isFinite(item[yKey])) item[yKey] = anchor.y + (item[yKey] - anchor.y) * scaleY + dy;
     }
     if (item.points) item.points = item.points.map(point => ({ x: anchor.x + (point.x - anchor.x) * scaleX + dx, y: anchor.y + (point.y - anchor.y) * scaleY + dy }));
-    const sizeFactor = Math.sqrt(Math.max(.0025, Math.abs(scaleX * scaleY)));
-    if (item.type === 'text' || item.type === 'boxedNumber' || item.type === 'leader') item.fontSize = Math.max(3, Math.min(96, (item.fontSize || 18) * sizeFactor));
-    item.width = Math.max(.5, Math.min(20, (item.width || 3) * sizeFactor));
+    const sizeFactor = Math.sqrt(Math.max(.000001, Math.abs(scaleX * scaleY)));
+    if (item.type === 'text' || item.type === 'boxedNumber' || item.type === 'leader') item.fontSize = Math.max(.5, Math.min(96, (item.fontSize || 18) * sizeFactor));
+    item.width = Math.max(.1, Math.min(20, (item.width || 3) * sizeFactor));
   }
   function scaleAnnotations(items, factor) {
     const centers = items.map(annotationCenter);
     const center = { x: centers.reduce((sum, p) => sum + p.x, 0) / centers.length, y: centers.reduce((sum, p) => sum + p.y, 0) / centers.length };
     for (const item of items) {
+      // A leader points to a specific damage location. Resize its shelf and
+      // text around the arrow tip, even when several drawings are selected.
+      const anchor = item.type === 'leader' ? { x: item.x1, y: item.y1 } : center;
       for (const suffix of ['1', '2', '3']) {
-        if (Number.isFinite(item[`x${suffix}`])) item[`x${suffix}`] = center.x + (item[`x${suffix}`] - center.x) * factor;
-        if (Number.isFinite(item[`y${suffix}`])) item[`y${suffix}`] = center.y + (item[`y${suffix}`] - center.y) * factor;
+        if (Number.isFinite(item[`x${suffix}`])) item[`x${suffix}`] = anchor.x + (item[`x${suffix}`] - anchor.x) * factor;
+        if (Number.isFinite(item[`y${suffix}`])) item[`y${suffix}`] = anchor.y + (item[`y${suffix}`] - anchor.y) * factor;
       }
-      if (item.points) item.points = item.points.map(point => ({ x: center.x + (point.x - center.x) * factor, y: center.y + (point.y - center.y) * factor }));
-      if (item.type === 'text' || item.type === 'boxedNumber' || item.type === 'leader') item.fontSize = Math.max(8, Math.min(96, (item.fontSize || 18) * factor));
-      item.width = Math.max(.75, Math.min(20, (item.width || 3) * factor));
+      if (item.points) item.points = item.points.map(point => ({ x: anchor.x + (point.x - anchor.x) * factor, y: anchor.y + (point.y - anchor.y) * factor }));
+      if (item.type === 'text' || item.type === 'boxedNumber' || item.type === 'leader') item.fontSize = Math.max(.5, Math.min(96, (item.fontSize || 18) * factor));
+      item.width = Math.max(.1, Math.min(20, (item.width || 3) * factor));
     }
   }
   function removeMirroredPhotoAnnotation(key, id) {
@@ -1001,10 +1122,39 @@
     state.annotationCopyArmed = false;
     const menu = $('annotationMiniMenu'); menu.classList.remove('hiddenPanel');
     $('annotationSelectionCount').textContent = `${state.selectedAnnotation.selections.length}個`;
-    $('annotationDamageInfo').classList.toggle('hiddenPanel', side !== 'element');
+    const selectedItems = state.selectedAnnotation.selections.map(selection => annotationList(selection.key, selection.side)[selection.index]).filter(Boolean);
+    const hasLeader = selectedItems.some(item => item.type === 'leader');
+    $('annotationDamageInfo').classList.toggle('hiddenPanel', side !== 'element' || hasLeader);
+    $('annotationLeaderReverse').classList.toggle('hiddenPanel', !hasLeader);
+    $('annotationLeaderTextSmaller').classList.toggle('hiddenPanel', !hasLeader);
+    $('annotationLeaderTextLarger').classList.toggle('hiddenPanel', !hasLeader);
+    if (hasLeader) {
+      const leader = selectedItems.find(item => item.type === 'leader');
+      const fields = new Set(leader.leaderFields || defaultLeaderFields);
+      document.querySelectorAll('#annotationLeaderCustomPanel [data-leader-field]').forEach(input => { input.checked = fields.has(input.dataset.leaderField); });
+      $('annotationMemberDigits').value = String(leader.memberDigits || 4);
+    }
+    $('annotationPropertyPanel').classList.add('hiddenPanel');
+    const firstItem = selectedItems[0] || {};
+    $('annotationColor').value = firstItem.color || '#e53935';
+    document.querySelectorAll('#annotationBasicColors button').forEach(button => button.classList.toggle('active', button.dataset.color.toLowerCase() === $('annotationColor').value.toLowerCase()));
+    $('annotationWidth').value = String(firstItem.width || 3);
+    $('annotationDash').value = firstItem.dash || '';
     const width = menu.offsetWidth || 430, height = menu.offsetHeight || 42;
-    menu.style.left = `${Math.max(4, Math.min(innerWidth - width - 4, event.clientX + 32))}px`;
-    menu.style.top = `${Math.max(4, Math.min(innerHeight - height - 4, event.clientY + 36))}px`;
+    const frame = svg.querySelector('.selectionControls .selectionBox')?.getBoundingClientRect() || node.getBoundingClientRect();
+    const gap = 12;
+    let left = Math.max(4, Math.min(innerWidth - width - 4, frame.left));
+    let top;
+    if (frame.bottom + gap + height <= innerHeight - 4) top = frame.bottom + gap;
+    else if (frame.top - gap - height >= 4) top = frame.top - gap - height;
+    else {
+      top = Math.max(4, Math.min(innerHeight - height - 4, frame.top));
+      if (frame.right + gap + width <= innerWidth - 4) left = frame.right + gap;
+      else if (frame.left - gap - width >= 4) left = frame.left - gap - width;
+      else top = Math.max(4, Math.min(innerHeight - height - 4, event.clientY + 36));
+    }
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
   }
   function addSelectionControls(svg, selectedNodes, selections) {
     svg.querySelector('.selectionControls')?.remove();
@@ -1035,10 +1185,11 @@
         if (handle === 'move') return { anchor: { x: 0, y: 0 }, sx: 1, sy: 1, dx: pointer.x - start.x, dy: pointer.y - start.y };
         const west = handle.includes('w'), east = handle.includes('e'), north = handle.includes('n'), south = handle.includes('s');
         const anchor = { x: west ? bounds.right : bounds.left, y: north ? bounds.bottom : bounds.top }; let sx = 1, sy = 1;
-        if (west) sx = Math.max(.05, (bounds.right - Math.min(pointer.x, bounds.right - 12)) / bounds.width);
-        if (east) sx = Math.max(.05, (Math.max(pointer.x, bounds.left + 12) - bounds.left) / bounds.width);
-        if (north) sy = Math.max(.05, (bounds.bottom - Math.min(pointer.y, bounds.bottom - 12)) / bounds.height);
-        if (south) sy = Math.max(.05, (Math.max(pointer.y, bounds.top + 12) - bounds.top) / bounds.height);
+        const minimumSpan = 1.5 / selectionZoom;
+        if (west) sx = Math.max(.002, (bounds.right - Math.min(pointer.x, bounds.right - minimumSpan)) / bounds.width);
+        if (east) sx = Math.max(.002, (Math.max(pointer.x, bounds.left + minimumSpan) - bounds.left) / bounds.width);
+        if (north) sy = Math.max(.002, (bounds.bottom - Math.min(pointer.y, bounds.bottom - minimumSpan)) / bounds.height);
+        if (south) sy = Math.max(.002, (Math.max(pointer.y, bounds.top + minimumSpan) - bounds.top) / bounds.height);
         return { anchor, sx, sy, dx: 0, dy: 0 };
       };
       const transformText = value => `translate(${value.dx} ${value.dy}) translate(${value.anchor.x} ${value.anchor.y}) scale(${value.sx} ${value.sy}) translate(${-value.anchor.x} ${-value.anchor.y})`;
@@ -1173,20 +1324,33 @@
     } else if (item.type === 'free') {
       node = svgNode('path', { d: (item.points || []).map((point, index) => `${index ? 'L' : 'M'} ${point.x} ${point.y}`).join(' ') });
     } else if (item.type === 'leader') {
-      const tail = fittedLeaderTail(item, displayFontScale);
+      let tail = fittedLeaderTail(item, displayFontScale);
       node = svgNode('polyline', { points: `${item.x1},${item.y1} ${item.x2},${item.y2} ${tail},${item.y2}`, 'marker-start': arrowMarkerUrl });
       if (item.text) {
         const fontSize = (item.fontSize || 18) * displayFontScale;
         const textX = Math.min(item.x2, tail) + fontSize * .12, parts = splitLeaderText(item.text);
+        const renderedLabels = [];
         const appendLabel = (text, y) => {
           if (!text) return;
           const label = svgNode('text', { x: textX, y }); label.textContent = text;
-          label.style.fill = item.color || '#e53935'; label.style.fontSize = `${fontSize}px`; svg.appendChild(label);
+          label.style.fill = item.color || '#e53935'; label.style.fontSize = `${fontSize}px`; svg.appendChild(label); renderedLabels.push(label);
         };
         appendLabel(parts.upper.join(' / '), item.y2 - Math.max(1.5, fontSize * .22));
         // Only the damage number follows CAD野帳's photo-number placement
         // below the shelf. Member/damage descriptions remain above it.
         appendLabel(parts.damage.join(' / '), item.y2 + fontSize * 1.05);
+        requestAnimationFrame(() => {
+          if (!node.isConnected || item.leaderTailManual || !renderedLabels.length) return;
+          const actualWidth = Math.max(...renderedLabels.map(label => label.getComputedTextLength?.() || label.getBBox().width || 0));
+          if (!(actualWidth > 0)) return;
+          const fallback = item.x3 ?? (item.x2 + (item.x2 >= item.x1 ? 120 : -120));
+          const direction = fallback >= item.x2 ? 1 : -1;
+          tail = item.x2 + direction * Math.max(fontSize * 1.5, actualWidth + fontSize * .24);
+          item.x3 = tail;
+          node.setAttribute('points', `${item.x1},${item.y1} ${item.x2},${item.y2} ${tail},${item.y2}`);
+          const exactTextX = Math.min(item.x2, tail) + fontSize * .12;
+          renderedLabels.forEach(label => label.setAttribute('x', exactTextX));
+        });
       }
     } else {
       node = svgNode('line', { x1: item.x1, y1: item.y1, x2: item.x2, y2: item.y2 });
@@ -1300,6 +1464,7 @@
           return;
         }
         const style = drawingStyle();
+        style.fontSize *= 1.5;
         const item = { id: annotationId(), type: 'leader', x1: leaderTip.x, y1: leaderTip.y, x2: p.x, y2: p.y, x3: p.x + (p.x >= leaderTip.x ? 120 : -120), text: '', ...style, damageInfo: null, annotationSide: side, annotationKey: pageNumber };
         annotationList(pageNumber, side).push(item);
         leaderTipMarker?.remove(); leaderTip = null; leaderTipMarker = null;
@@ -1441,9 +1606,8 @@
     for (let i = 0; i < items.length; i++) {
       const windowItems = items.slice(i, i + 8);
       const ownNumbers = damageNumbers(items[i].str || '');
-      // Do not assign a complete label found later in the look-ahead window
-      // to the current item's coordinates. Joining is only for labels that
-      // are genuinely split across separate PDF text items.
+      // A complete label found later in the look-ahead window belongs to
+      // that item, not to this item's coordinates.
       if (!ownNumbers.length && windowItems.some(item => damageNumbers(item.str || '').length)) continue;
       const numbers = [...new Set(ownNumbers.length
         ? ownNumbers
@@ -2737,6 +2901,13 @@
     $(side + 'Prev').addEventListener('click', () => move(-1));
     $(side + 'Next').addEventListener('click', () => move(1));
   }
+  $('elementAddBlank').addEventListener('click', async () => {
+    state.element.blankPages++;
+    state.element.page = (state.element.doc?.numPages || 0) + state.element.blankPages;
+    state.element.zoom = 1;
+    await renderSide('element');
+    $('globalStatus').textContent = `白紙ページを追加しました（${state.element.page}ページ目）`;
+  });
   function bindZoom(side) {
     const change = (factor) => {
       state[side].zoom = Math.max(MIN_PDF_ZOOM, Math.min(MAX_PDF_ZOOM, state[side].zoom * factor));
@@ -2887,7 +3058,7 @@
     viewer.addEventListener('touchend', finishPinch, { passive: true });
     viewer.addEventListener('touchcancel', finishPinch, { passive: true });
     viewer.addEventListener('wheel', event => {
-      if (!target.doc) return;
+      if (!target.doc && !(side === 'element' && target.blankPages)) return;
       event.preventDefault();
       const anchor = captureAnchor(event.clientX, event.clientY);
       const factor = Math.exp(-event.deltaY * .0015);
@@ -2900,7 +3071,7 @@
       }, 90);
     }, { passive: false });
     viewer.addEventListener('dblclick', async event => {
-      if (!target.doc) return;
+      if (!target.doc && !(side === 'element' && target.blankPages)) return;
       const anchor = captureAnchor(event.clientX, event.clientY);
       target.zoom = target.zoom > 1.05 ? 1 : 2.5;
       await renderSide(side);
@@ -2969,7 +3140,8 @@
       $('globalStatus').textContent = 'コピー非対応のため、囲んだ範囲をPNG保存しました';
     }
   }
-  let boxedNumberResolver = null;
+  const LAST_PHOTO_NUMBER_STORAGE_KEY = 'inspection:last-photo-number';
+  let boxedNumberResolver = null, boxedNumberPrefilled = false;
   function closeNumberKeypad(value = '') {
     $('numberKeypad').classList.add('hiddenPanel');
     const resolve = boxedNumberResolver; boxedNumberResolver = null;
@@ -2977,7 +3149,8 @@
   }
   function requestBoxedNumber() {
     if (boxedNumberResolver) closeNumberKeypad('');
-    $('boxedNumberInput').value = '';
+    $('boxedNumberInput').value = localStorage.getItem(LAST_PHOTO_NUMBER_STORAGE_KEY) || '';
+    boxedNumberPrefilled = Boolean($('boxedNumberInput').value);
     $('numberKeypad').classList.remove('hiddenPanel');
     return new Promise(resolve => { boxedNumberResolver = resolve; });
   }
@@ -3330,13 +3503,13 @@
   });
   document.querySelectorAll('[data-number-key]').forEach(button => button.addEventListener('click', () => {
     const input = $('boxedNumberInput'); const key = button.dataset.numberKey;
-    if (key === 'back') input.value = input.value.slice(0, -1);
-    else if (input.value.length < 16) input.value += key;
+    if (key === 'back') { input.value = boxedNumberPrefilled ? '' : input.value.slice(0, -1); boxedNumberPrefilled = false; }
+    else if (input.value.length < 16) { if (boxedNumberPrefilled) input.value = ''; boxedNumberPrefilled = false; input.value += key; }
   }));
   $('numberKeypadCancel').addEventListener('click', () => closeNumberKeypad(''));
   $('numberKeypadOk').addEventListener('click', () => {
     const value = $('boxedNumberInput').value.replace(/－+/g, '－').replace(/^－|－$/g, '');
-    if (value) closeNumberKeypad(value);
+    if (value) { localStorage.setItem(LAST_PHOTO_NUMBER_STORAGE_KEY, value); closeNumberKeypad(value); }
   });
   $('elementColorToggle').addEventListener('click', event => {
     const modes = ['color', 'monochrome', 'faded'];
@@ -3526,6 +3699,148 @@
   };
   $('annotationShrink').addEventListener('click', () => resizeSelectedAnnotations(.8));
   $('annotationGrow').addEventListener('click', () => resizeSelectedAnnotations(1.25));
+  $('annotationLeaderReverse').addEventListener('click', async () => {
+    const selected = state.selectedAnnotation; if (!selected) return;
+    const selections = selected.selections || [selected];
+    const leaders = selections.map(selection => ({ selection, item: annotationList(selection.key, selection.side)[selection.index] })).filter(pair => pair.item?.type === 'leader');
+    for (const { selection, item } of leaders) {
+      removeMirroredPhotoAnnotation(selection.key, item.id);
+      const tail = fittedLeaderTail(item, selection.side === 'photo' ? 1 / Math.max(.05, state.photo.zoom) : 1);
+      item.x3 = item.x2 - (tail - item.x2);
+      item.leaderTailManual = true;
+      if (selection.side === 'photo') mirrorPhotoRecordAnnotation(selection.wrap, selection.key, item);
+    }
+    await renderSide(selected.side);
+    const svg = [...document.querySelectorAll('.annotationLayer')].find(layer => layer.dataset.annotationSide === selected.side && layer.dataset.annotationKey === String(selected.key));
+    if (svg) {
+      const restored = selections.map(selection => ({ ...selection, wrap: svg.closest('.pageWrap') }));
+      const nodes = restored.map(selection => svg.querySelector(`[data-annotation-index="${selection.index}"]`)).filter(Boolean);
+      state.selectedAnnotation = { ...selected, wrap: svg.closest('.pageWrap'), selections: restored };
+      nodes.forEach(node => node.classList.add('selectedAnnotation'));
+      addSelectionControls(svg, nodes, restored);
+    }
+    $('globalStatus').textContent = `${leaders.length}個の引き出し水平線の向きを切り替えました`;
+  });
+  const resizeSelectedLeaderText = async factor => {
+    const selected = state.selectedAnnotation; if (!selected) return;
+    const selections = selected.selections || [selected];
+    const pairs = selections.map(selection => ({ selection, item: annotationList(selection.key, selection.side)[selection.index] })).filter(pair => pair.item?.type === 'leader');
+    if (!pairs.length) return;
+    for (const { selection, item } of pairs) {
+      removeMirroredPhotoAnnotation(selection.key, item.id);
+      item.fontSize = Math.max(.5, Math.min(144, (item.fontSize || 18) * factor));
+      if (selection.side === 'photo') mirrorPhotoRecordAnnotation(selection.wrap, selection.key, item);
+    }
+    await renderSide(selected.side);
+    const svg = [...document.querySelectorAll('.annotationLayer')].find(layer => layer.dataset.annotationSide === selected.side && layer.dataset.annotationKey === String(selected.key));
+    if (svg) {
+      const restored = selections.map(selection => ({ ...selection, wrap: svg.closest('.pageWrap') }));
+      const nodes = restored.map(selection => svg.querySelector(`[data-annotation-index="${selection.index}"]`)).filter(Boolean);
+      state.selectedAnnotation = { ...selected, wrap: svg.closest('.pageWrap'), selections: restored };
+      nodes.forEach(node => node.classList.add('selectedAnnotation'));
+      addSelectionControls(svg, nodes, restored);
+    }
+    $('globalStatus').textContent = `引き出し文字を${factor > 1 ? '大きく' : '小さく'}しました（続けて変更できます）`;
+  };
+  $('annotationLeaderTextSmaller').addEventListener('click', () => resizeSelectedLeaderText(.85));
+  $('annotationLeaderTextLarger').addEventListener('click', () => resizeSelectedLeaderText(1.18));
+  const leaderCustomPanel = document.createElement('div');
+  leaderCustomPanel.id = 'annotationLeaderCustomPanel'; leaderCustomPanel.className = 'annotationLeaderCustomPanel hiddenPanel';
+  for (const [field, labelText] of [['memberName','部材名称'],['memberNumber','部材番号'],['damageType','損傷の種類'],['damageNumber','損傷番号']]) {
+    const label = document.createElement('label'), input = document.createElement('input');
+    input.type = 'checkbox'; input.checked = true; input.dataset.leaderField = field;
+    label.append(input, labelText); leaderCustomPanel.appendChild(label);
+  }
+  const digitsLabel = document.createElement('label'); digitsLabel.textContent = '部材番号';
+  const digitsSelect = document.createElement('select'); digitsSelect.id = 'annotationMemberDigits';
+  for (const digits of [2, 3, 4]) {
+    const option = document.createElement('option'); option.value = String(digits); option.textContent = `${digits}桁`;
+    digitsSelect.appendChild(option);
+  }
+  digitsSelect.value = '4';
+  digitsLabel.appendChild(digitsSelect); leaderCustomPanel.appendChild(digitsLabel);
+  document.body.appendChild(leaderCustomPanel);
+  $('topLeaderSettings').addEventListener('click', () => {
+    const selected = state.selectedAnnotation;
+    const leader = selected && (selected.selections || [selected]).map(selection => annotationList(selection.key, selection.side)[selection.index]).find(item => item?.type === 'leader');
+    if (leader) {
+      const fields = new Set(leader.leaderFields || defaultLeaderFields);
+      leaderCustomPanel.querySelectorAll('[data-leader-field]').forEach(input => { input.checked = fields.has(input.dataset.leaderField); });
+      digitsSelect.value = String(leader.memberDigits || 4);
+    }
+    leaderCustomPanel.classList.toggle('hiddenPanel');
+    $('topLeaderSettings').classList.toggle('active', !leaderCustomPanel.classList.contains('hiddenPanel'));
+    if (!leader) $('globalStatus').textContent = '引き出し線を選択すると表示設定を変更できます';
+  });
+  const updateSelectedLeaderCustom = async () => {
+    const selected = state.selectedAnnotation; if (!selected) return;
+    const selections = selected.selections || [selected];
+    const fields = [...leaderCustomPanel.querySelectorAll('[data-leader-field]:checked')].map(input => input.dataset.leaderField);
+    let changed = 0;
+    for (const selection of selections) {
+      const item = annotationList(selection.key, selection.side)[selection.index];
+      if (item?.type !== 'leader') continue;
+      item.leaderFields = fields; item.memberDigits = Number(digitsSelect.value);
+      const record = item.damageInfo?.records?.[0];
+      if (record) {
+        const number = item.damageInfo.damageNumber || record.damageNumber || '';
+        item.text = leaderTextFromRow(record, number, fields, item.memberDigits);
+      }
+      if (selection.side === 'photo') {
+        removeMirroredPhotoAnnotation(selection.key, item.id);
+        mirrorPhotoRecordAnnotation(selection.wrap, selection.key, item);
+      }
+      changed++;
+    }
+    if (!changed) { $('globalStatus').textContent = '引き出し線を選択してください'; return; }
+    await renderSide(selected.side);
+    const svg = [...document.querySelectorAll('.annotationLayer')].find(layer => layer.dataset.annotationSide === selected.side && layer.dataset.annotationKey === String(selected.key));
+    if (svg) {
+      const restored = selections.map(selection => ({ ...selection, wrap: svg.closest('.pageWrap') }));
+      const nodes = restored.map(selection => svg.querySelector(`[data-annotation-index="${selection.index}"]`)).filter(Boolean);
+      state.selectedAnnotation = { ...selected, wrap: svg.closest('.pageWrap'), selections: restored };
+      nodes.forEach(node => node.classList.add('selectedAnnotation')); addSelectionControls(svg, nodes, restored);
+    }
+    leaderCustomPanel.classList.remove('hiddenPanel');
+    $('globalStatus').textContent = `${changed}個の引き出し線の表示内容を変更しました`;
+  };
+  leaderCustomPanel.querySelectorAll('input').forEach(input => input.addEventListener('change', updateSelectedLeaderCustom));
+  digitsSelect.addEventListener('change', updateSelectedLeaderCustom);
+  $('annotationPropertiesToggle').addEventListener('click', () => $('annotationPropertyPanel').classList.toggle('hiddenPanel'));
+  const updateSelectedAnnotationStyle = async (property, value, label) => {
+    const selected = state.selectedAnnotation; if (!selected) return;
+    const selections = selected.selections || [selected];
+    const pairs = selections.map(selection => ({ selection, item: annotationList(selection.key, selection.side)[selection.index] })).filter(pair => pair.item);
+    if (!pairs.length) return;
+    for (const { selection, item } of pairs) {
+      removeMirroredPhotoAnnotation(selection.key, item.id); item[property] = value;
+      if (selection.side === 'photo') mirrorPhotoRecordAnnotation(selection.wrap, selection.key, item);
+    }
+    await renderSide(selected.side);
+    const svg = [...document.querySelectorAll('.annotationLayer')].find(layer => layer.dataset.annotationSide === selected.side && layer.dataset.annotationKey === String(selected.key));
+    if (svg) {
+      const restored = selections.map(selection => ({ ...selection, wrap: svg.closest('.pageWrap') }));
+      const nodes = restored.map(selection => svg.querySelector(`[data-annotation-index="${selection.index}"]`)).filter(Boolean);
+      state.selectedAnnotation = { ...selected, wrap: svg.closest('.pageWrap'), selections: restored };
+      nodes.forEach(node => node.classList.add('selectedAnnotation')); addSelectionControls(svg, nodes, restored);
+    }
+    $('annotationPropertyPanel').classList.remove('hiddenPanel');
+    $('globalStatus').textContent = `${pairs.length}個の作図の${label}を変更しました`;
+  };
+  $('annotationColor').addEventListener('change', event => {
+    document.querySelectorAll('#annotationBasicColors button').forEach(button => button.classList.toggle('active', button.dataset.color.toLowerCase() === event.target.value.toLowerCase()));
+    updateSelectedAnnotationStyle('color', event.target.value, '色');
+  });
+  document.querySelectorAll('#annotationBasicColors button').forEach(button => {
+    button.style.background = button.dataset.color;
+    button.addEventListener('click', () => {
+      $('annotationColor').value = button.dataset.color;
+      document.querySelectorAll('#annotationBasicColors button').forEach(item => item.classList.toggle('active', item === button));
+      updateSelectedAnnotationStyle('color', button.dataset.color, '色');
+    });
+  });
+  $('annotationWidth').addEventListener('change', event => updateSelectedAnnotationStyle('width', Number(event.target.value), '線幅'));
+  $('annotationDash').addEventListener('change', event => updateSelectedAnnotationStyle('dash', event.target.value, '線種類'));
   $('annotationDelete').addEventListener('click', () => {
     const selected = state.selectedAnnotation; if (!selected) return;
     const selections = selected.selections || [selected];
@@ -3548,7 +3863,7 @@
     $('globalStatus').textContent = `${selections.length}個の作図を消去しました`;
   });
   document.addEventListener('pointerdown', event => {
-    if (event.target.closest('#annotationMiniMenu, .selectableAnnotation, .selectionControls, .zoomBar')) return;
+    if (event.target.closest('#annotationMiniMenu, #annotationLeaderCustomPanel, #topLeaderSettings, .selectableAnnotation, .selectionControls, .zoomBar')) return;
     if (!state.annotationCopyArmed) {
       $('annotationMiniMenu').classList.add('hiddenPanel');
       state.selectedAnnotation = null;

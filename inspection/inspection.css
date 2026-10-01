@@ -265,10 +265,25 @@ main.photoFloating #paneDivider { display: none; }
 .annotationLayer.selecting .selectableAnnotation { pointer-events: stroke; cursor: pointer; }
 .annotationLayer.selecting text.selectableAnnotation, .annotationLayer.selecting g.selectableAnnotation { pointer-events: all; }
 .annotationLayer .selectableAnnotation.selectedAnnotation { filter: drop-shadow(0 0 3px #00a6ff); stroke: #087fdb !important; }
-.annotationMiniMenu { position: fixed; z-index: 70; display: flex; align-items: center; gap: 3px; padding: 4px; border: 1px solid #78909a; border-radius: 9px; background: white; box-shadow: 0 5px 18px #0005; }
+.annotationMiniMenu { position: fixed; z-index: 70; display: flex; flex-wrap: wrap; align-items: center; gap: 3px; max-width: min(96vw, 760px); padding: 4px; border: 1px solid #78909a; border-radius: 9px; background: white; box-shadow: 0 5px 18px #0005; }
 .annotationMiniMenu button { padding: 6px 9px; font-size: 12px; }
 .annotationMiniMenu #annotationDamageInfo { border-color: #087f8c; background: #e3f5f7; color: #075d68; font-weight: 800; }
 .annotationMiniMenu span { padding: 0 5px; color: #45616a; font-size: 12px; font-weight: 800; white-space: nowrap; }
+.annotationPropertyPanel { flex-basis: 100%; display: flex; align-items: center; gap: 8px; padding: 5px 7px; border-top: 1px solid #cad6d9; background: #f5f9fa; }
+.annotationPropertyPanel label { display: flex; align-items: center; gap: 4px; color: #28474f; font-size: 11px; font-weight: 800; }
+.annotationPropertyPanel input[type="color"] { width: 34px; height: 27px; padding: 1px; border: 1px solid #78909a; border-radius: 4px; }
+.annotationPropertyPanel select { height: 27px; border: 1px solid #78909a; border-radius: 4px; background: white; font-size: 12px; }
+.annotationLeaderCustomPanel { position: fixed; z-index: 75; top: 44px; right: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 13px; max-width: min(94vw, 620px); padding: 10px 12px; border: 1px solid #78909a; border-radius: 8px; background: white; box-shadow: 0 5px 18px #0005; }
+.annotationLeaderCustomPanel label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 12px; font-weight: 700; }
+.annotationLeaderCustomPanel input { width: 16px; height: 16px; }
+.annotationLeaderCustomPanel select { height: 28px; border: 1px solid #78909a; border-radius: 4px; background: white; }
+.annotationBasicColors { display: flex; gap: 4px; }
+.annotationBasicColors button { width: 25px; height: 25px; min-width: 25px; padding: 0; border: 2px solid white; border-radius: 50%; box-shadow: 0 0 0 1px #78909a; }
+.annotationBasicColors button.active { box-shadow: 0 0 0 3px #263238; }
+.drawingCandidate.selected { border-color: #087f8c; background: #dff5f3; box-shadow: inset 4px 0 #087f8c; }
+.drawingCandidateActions { position: sticky; bottom: 0; display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 8px; border: 1px solid #b7cacf; border-radius: 7px; background: #fff; box-shadow: 0 -3px 8px #36545c22; }
+.drawingCandidateActions strong { margin-right: auto; color: #075d68; }
+.drawingInfoGuideError { color: #b71c1c !important; font-weight: 800; }
 .selectionMarquee { fill: #039be522 !important; stroke: #039be5 !important; stroke-width: 2 !important; stroke-dasharray: 7 4; }
 .selectionControls { touch-action: none; }
 .selectionControls .selectionBox { fill: #039be50d; stroke: #087fdb; stroke-width: 2; stroke-dasharray: 7 4; vector-effect: non-scaling-stroke; cursor: move; pointer-events: all; }
