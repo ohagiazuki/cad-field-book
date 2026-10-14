@@ -22,8 +22,8 @@
   const state = {
     element: { doc: null, page: 1, blankPages: 0, blankPageSize: { width: 1000, height: 707 }, viewer: $('elementViewer'), label: $('elementPage'), zoom: 1, focus: null },
     photo: { doc: null, page: 1, viewer: $('photoViewer'), label: $('photoPage'), zoom: 1, focus: null, matches: null, pageOverview: false, fitPaneAfterRender: false, dockMode: 'free' },
-    photoIndex: new Map(), damageNumberDigits: 2, assessmentIndex: new Map(), assessmentRows: [], assessmentDoc: null, assessmentFocusNumbers: [], assessmentFocusSpan: '', currentDamage: null, renderToken: { element: 0, photo: 0 }, renderTasks: { element: null, photo: null }, elementTextContent: new Map(),
-    ocrWorker: null, ocrHotspots: new Map(), textDamageNumbers: new Map(), elementSpanNumbers: new Map(), ocrJobs: new Map(), ocrProgress: null, missingDamageNumbers: [], missingPhotoNumbers: [], ignoredMissing: new Set(), manualHotspots: new Map(), hotspotOverrides: new Map(), pendingManualDamage: null,
+    photoIndex: new Map(), photoNumberIndex: new Map(), damageNumberDigits: 2, assessmentIndex: new Map(), assessmentRows: [], assessmentDoc: null, assessmentFocusNumbers: [], assessmentFocusSpan: '', currentDamage: null, renderToken: { element: 0, photo: 0 }, renderTasks: { element: null, photo: null }, elementTextContent: new Map(),
+    ocrWorker: null, ocrHotspots: new Map(), textDamageNumbers: new Map(), photoNumberPages: new Set(), elementSpanNumbers: new Map(), ocrJobs: new Map(), ocrProgress: null, missingDamageNumbers: [], missingPhotoNumbers: [], ignoredMissing: new Set(), manualHotspots: new Map(), hotspotOverrides: new Map(), pendingManualDamage: null,
     drawMode: 'select', previousDrawMode: 'free', drawingSide: 'element', pendingImage: '', annotations: new Map(), photoAnnotations: new Map(), activePhotoAnnotationKey: null, selectedAnnotation: null, annotationCopyArmed: false, hotspotEditMode: false, editingHotspot: null, hotspotFocusNumbers: [], suppressHotspotUntil: 0
   };
   const cleanField = value => String(value || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -46,16 +46,44 @@
     const digits = normalizeDigits(String(source)).match(/\d+/)?.[0];
     return digits ? String(Number(digits)) : '';
   }
-  function photoRecordFromItems(items, focus, pageNumber, damageNumber, pageSpanNumber = '') {
-    if (!items?.length) return { damageNumber, pageNumber };
-    const xs = items.map(item => Number(item.transform?.[4] || 0));
-    const ys = items.map(item => Number(item.transform?.[5] || 0));
-    const midX = (Math.min(...xs) + Math.max(...xs)) / 2;
-    const midY = (Math.min(...ys) + Math.max(...ys)) / 2;
-    const local = items.filter(item => {
+  function itemsInPhotoCell(items, focus, pageWidth, pageHeight) {
+    const area = photoRegionForFocus(focus);
+    const left = pageWidth * area.x;
+    const right = pageWidth * (area.x + area.width);
+    // PDF text coordinates use a bottom-left origin; focus.row uses top-first.
+    const top = pageHeight * (1 - area.y);
+    const bottom = pageHeight * (1 - area.y - area.height);
+    return items.filter(item => {
       const x = Number(item.transform?.[4] || 0), y = Number(item.transform?.[5] || 0);
-      return (focus.column ? x >= midX : x < midX) && (focus.row ? y < midY : y >= midY);
+      return x >= left && x < right && y >= bottom && y < top;
     });
+  }
+  function inferPhotoNumberFromCell(items, focus, pageWidth, pageHeight) {
+    const area = photoRegionForFocus(focus);
+    const cellLeft = pageWidth * area.x;
+    const cellTop = pageHeight * (1 - area.y);
+    const cellWidth = pageWidth * area.width, cellHeight = pageHeight * area.height;
+    const candidates = items.map(item => {
+      const text = normalizeDigits(cleanField(item.str)).replace(/[OoＯ〇]/g, '0').replace(/[Il|]/g, '1');
+      const x = Number(item.transform?.[4] || 0), y = Number(item.transform?.[5] || 0);
+      return { text, x, y, relX: (x - cellLeft) / Math.max(1, cellWidth), relTop: (cellTop - y) / Math.max(1, cellHeight) };
+    }).filter(item => /^\d{1,5}$/.test(item.text) && item.text !== '0' &&
+      item.relX >= .2 && item.relX <= .72 && item.relTop >= -.03 && item.relTop <= .24)
+      .sort((a, b) => a.relTop - b.relTop || a.relX - b.relX);
+    return candidates.length ? normalizePhotoNumber(candidates[0].text) : '';
+  }
+  function photoFocusForPoint(x, y, pageWidth, pageHeight, settings = photoLinkSettings()) {
+    const nx = x / Math.max(1, pageWidth), ny = (pageHeight - y) / Math.max(1, pageHeight);
+    const regions = photoLinkRegions(settings);
+    const index = regions.findIndex(area => nx >= area.x && nx <= area.x + area.width && ny >= area.y && ny <= area.y + area.height);
+    if (index < 0) return null;
+    return { column: index % settings.columns, row: Math.floor(index / settings.columns), columns: settings.columns, rows: settings.rows };
+  }
+  function photoRecordFromItems(items, focus, pageNumber, damageNumber, pageSpanNumber = '', pageWidth = 0, pageHeight = 0) {
+    if (!items?.length) return { damageNumber, pageNumber };
+    const xs = items.map(item => Number(item.transform?.[4] || 0)), ys = items.map(item => Number(item.transform?.[5] || 0));
+    const width = pageWidth || Math.max(...xs), height = pageHeight || Math.max(...ys);
+    const local = itemsInPhotoCell(items, focus, width, height);
     const labels = {
       photoNumber: /写真番号/, spanNumber: /径間番号|径間/, memberName: /部材名|部材名称/,
       memberNumber: /要素番号|部材番号/, damageType: /損傷の種類|損傷種類/,
@@ -63,6 +91,11 @@
     };
     const record = { damageNumber, pageNumber };
     for (const [key, pattern] of Object.entries(labels)) record[key] = fieldRightOf(local, pattern);
+    // Some municipal ledgers use a legacy Japanese font whose visible glyphs
+    // are correct but whose embedded text is mojibake. The numeric cells remain
+    // readable, so recover the photo number from its fixed position in each
+    // selected 3x2 record area when the label-based parser cannot read it.
+    record.photoNumber = normalizePhotoNumber(record.photoNumber) || inferPhotoNumberFromCell(local, focus, width, height);
     record.spanNumber = record.spanNumber || pageSpanNumber;
     return record;
   }
@@ -87,6 +120,72 @@
     return upper.join(' / ');
   }
   const normalizeDigits = (value) => value.replace(/[０-９]/g, c => String(c.charCodeAt(0) - 0xFEE0));
+  const PHOTO_LINK_SETTINGS_KEY = 'inspection-photo-link-settings-v2';
+  const defaultPhotoLinkSettings = { columns: 3, rows: 2, displayScale: 1, cropX: 0, cropY: 0, cropWidth: 1 / 3, cropHeight: 1 / 2 };
+  let pendingPhotoLinkRegions = null;
+  let activePhotoLinkRegion = 0;
+  const normalizedCrop = value => {
+    const width = Math.max(.05, Math.min(1, Number(value?.cropWidth ?? value?.width ?? defaultPhotoLinkSettings.cropWidth)));
+    const height = Math.max(.05, Math.min(1, Number(value?.cropHeight ?? value?.height ?? defaultPhotoLinkSettings.cropHeight)));
+    return {
+      x: Math.max(0, Math.min(1 - width, Number(value?.cropX ?? value?.x ?? 0))),
+      y: Math.max(0, Math.min(1 - height, Number(value?.cropY ?? value?.y ?? 0))),
+      width, height
+    };
+  };
+  function expandedPhotoLinkRegions(value, columns, rows) {
+    const base = normalizedCrop(value);
+    return Array.from({ length: columns * rows }, (_, index) => normalizedCrop({
+      x: base.x + (index % columns) * base.width,
+      y: base.y + Math.floor(index / columns) * base.height,
+      width: base.width,
+      height: base.height
+    }));
+  }
+  function photoLinkRegions(settings) {
+    const count = settings.columns * settings.rows;
+    if (Array.isArray(settings.regions) && settings.regions.length === count) return settings.regions.map(normalizedCrop);
+    return expandedPhotoLinkRegions(settings, settings.columns, settings.rows);
+  }
+  function photoRegionForFocus(focus, settings = photoLinkSettings()) {
+    const column = Math.max(0, Math.min(settings.columns - 1, Number(focus?.column || 0)));
+    const row = Math.max(0, Math.min(settings.rows - 1, Number(focus?.row || 0)));
+    return photoLinkRegions(settings)[row * settings.columns + column] || normalizedCrop(settings);
+  }
+  function photoLinkSettings() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(PHOTO_LINK_SETTINGS_KEY) || 'null') || {};
+      const settings = {
+        columns: [1, 2, 3, 4].includes(Number(saved.columns)) ? Number(saved.columns) : 3,
+        rows: [1, 2, 3, 4].includes(Number(saved.rows)) ? Number(saved.rows) : 2,
+        displayScale: [.5, .75, 1, 1.25, 1.5].includes(Number(saved.displayScale)) ? Number(saved.displayScale) : 1,
+        ...(() => { const crop = normalizedCrop(saved); return { cropX: crop.x, cropY: crop.y, cropWidth: crop.width, cropHeight: crop.height }; })()
+      };
+      settings.regions = Array.isArray(saved.regions) && saved.regions.length === settings.columns * settings.rows
+        ? saved.regions.map(normalizedCrop)
+        : expandedPhotoLinkRegions(saved, settings.columns, settings.rows);
+      return settings;
+    } catch (_) { return { ...defaultPhotoLinkSettings }; }
+  }
+  const normalizePhotoNumber = value => {
+    const token = normalizeDigits(String(value || '')).replace(/[OoＯ〇]/g, '0').match(/\d+/)?.[0];
+    return token ? String(Number(token)) : '';
+  };
+  const formatPhotoNumber = value => String(Number(value)).padStart(2, '0');
+  const photoNumberGroups = value => {
+    const text = normalizeDigits(String(value || '')).replace(/[OoＯ〇]/g, '0').replace(/[Il|]/g, '1').replace(/[\s　]+/g, '');
+    const groups = [];
+    for (const match of text.matchAll(/写真(?:番号|No\.?|NO\.?|№)[:：#\-－]?[「『\[（(]?((?:0*\d{1,5})(?:[、,，・／/\.．]0*\d{1,5})*)/gi)) {
+      const group = [];
+      for (const part of match[1].split(/[、,，・／/\.．]/)) {
+        const number = String(Number(part));
+        if (number !== '0' && number !== 'NaN') group.push(number);
+      }
+      if (group.length) groups.push(group);
+    }
+    return groups;
+  };
+  const photoNumbers = value => photoNumberGroups(value).flat();
   const formatDamageNumber = value => String(Number(value)).padStart(state.damageNumberDigits, '0');
   const detectDamageNumberDigits = value => {
     const normalized = normalizeDigits(String(value || '')).replace(/[OoＯ〇]/g, '0').replace(/[Il|]/g, '1').replace(/[\s　]+/g, '');
@@ -171,7 +270,7 @@
       target.focus = null;
       target.matches = null;
       if (side === 'photo') target.pageOverview = false;
-      if (side === 'element') { state.ocrHotspots.clear(); state.textDamageNumbers.clear(); state.elementSpanNumbers.clear(); state.elementTextContent.clear(); state.ocrJobs.clear(); }
+      if (side === 'element') { state.ocrHotspots.clear(); state.textDamageNumbers.clear(); state.photoNumberPages.clear(); state.elementSpanNumbers.clear(); state.elementTextContent.clear(); state.ocrJobs.clear(); }
       $(side === 'element' ? 'elementName' : 'photoName').textContent = file.name;
       if (side === 'photo') await buildPhotoIndex();
       await renderSide(side);
@@ -181,8 +280,10 @@
       }
       if (side === 'element') await preloadAllElementPages();
       $('globalStatus').textContent = side === 'photo'
-        ? `損傷写真を索引化しました（${state.photoIndex.size}番号）`
-        : state.missingDamageNumbers.length
+        ? `損傷写真を索引化しました（損傷${state.photoIndex.size}番号・写真${state.photoNumberIndex.size}番号）`
+        : state.photoNumberPages.size === target.doc.numPages
+          ? `全${target.doc.numPages}枚を写真番号方式として認識しました`
+          : state.missingDamageNumbers.length
           ? `全${target.doc.numPages}枚の認識完了。未認識番号が${state.missingDamageNumbers.length}件あります`
           : `全${target.doc.numPages}枚の読み込み・画像認識が完了しました（連番の欠落なし）`;
     } catch (error) {
@@ -190,10 +291,85 @@
       $('globalStatus').textContent = 'PDF読み込みエラー';
     }
   }
+  function photoNumberLineAt(items, index) {
+    const label = items[index];
+    const labelText = normalizeDigits(String(label?.str || ''));
+    if (!/写真/i.test(labelText)) return null;
+    const x = Number(label.transform?.[4] || 0), y = Number(label.transform?.[5] || 0);
+    const fontSize = Math.max(4, Math.hypot(Number(label.transform?.[2] || 0), Number(label.transform?.[3] || 0)));
+    const right = x + Number(label.width || fontSize * labelText.length);
+    const lineItems = items.filter(item => {
+      const ix = Number(item.transform?.[4] || 0), iy = Number(item.transform?.[5] || 0);
+      return cleanField(item.str) && Math.abs(iy - y) <= Math.max(4, fontSize * .75) &&
+        ix >= x - fontSize * 1.5 && ix <= right + Math.max(140, fontSize * 24);
+    }).sort((a, b) => Number(a.transform?.[4] || 0) - Number(b.transform?.[4] || 0));
+    const labelPosition = Math.max(0, lineItems.indexOf(label));
+    let relevant = lineItems.slice(labelPosition);
+    if (!/写真(?:番号|No\.?|NO\.?|№)/i.test(relevant.slice(0, 4).map(item => item.str || '').join(''))) return null;
+    const nextLabel = relevant.slice(1).findIndex(item => /(?:写真番号|部材|要素|損傷|メモ|径間)/.test(cleanField(item.str)));
+    if (nextLabel >= 0) relevant = relevant.slice(0, nextLabel + 1);
+    let numbers = photoNumbers(relevant.map(item => item.str || '').join(''));
+    if (!numbers.length) {
+      const numeric = relevant.slice(1).map(item => normalizeDigits(String(item.str || '')).replace(/[OoＯ〇]/g, '0').trim())
+        .filter(value => /^[0-9、,，・／/\.．]+$/.test(value)).join('');
+      numbers = photoNumbers(`写真番号${numeric}`);
+    }
+    numbers = [...new Set(numbers)];
+    if (!numbers.length) return null;
+    const last = relevant[relevant.length - 1] || label;
+    return { numbers, anchor: label, width: Math.max(Number(label.width || 0), Number(last.transform?.[4] || x) + Number(last.width || 0) - x) };
+  }
+  function photoNumberTextRuns(items) {
+    const runs = [];
+    for (let index = 0; index < items.length; index++) {
+      const seed = items[index], seedText = normalizeDigits(String(seed?.str || ''));
+      // Some drawing PDFs split 写・真・番・号・数値 into separate text
+      // objects. Start at the first 写 glyph and rebuild the visual line.
+      if (!/写/.test(seedText)) continue;
+      const sx = Number(seed.transform?.[4] || 0), sy = Number(seed.transform?.[5] || 0);
+      const fontSize = Math.max(4, Math.hypot(Number(seed.transform?.[2] || 0), Number(seed.transform?.[3] || 0)));
+      const candidates = items.filter(item => {
+        const x = Number(item.transform?.[4] || 0), y = Number(item.transform?.[5] || 0);
+        return cleanField(item.str) && Math.abs(y - sy) <= Math.max(4.5, fontSize * .9) && x >= sx - 1 && x <= sx + Math.max(180, fontSize * 38);
+      }).sort((a, b) => Number(a.transform?.[4] || 0) - Number(b.transform?.[4] || 0));
+      const start = Math.max(0, candidates.indexOf(seed));
+      const relevant = [];
+      let previousRight = sx;
+      for (const item of candidates.slice(start)) {
+        const x = Number(item.transform?.[4] || 0), width = Number(item.width || fontSize * String(item.str || '').length);
+        if (relevant.length && x - previousRight > Math.max(30, fontSize * 7)) break;
+        const text = cleanField(item.str);
+        // A page can place two independent photo callouts on the same visual
+        // row. Once this run already contains a complete photo number, the
+        // next "写..." item begins another callout and must not be grouped.
+        if (relevant.length && /写/.test(text) && photoNumbers(relevant.map(value => value.str || '').join('')).length) break;
+        if (relevant.length && /^(?:部材|要素|損傷|径間|メモ)/.test(text)) break;
+        relevant.push(item); previousRight = Math.max(previousRight, x + width);
+      }
+      const numbers = [...new Set(photoNumbers(relevant.map(item => item.str || '').join('')))];
+      if (!numbers.length) continue;
+      const last = relevant[relevant.length - 1] || seed;
+      const width = Math.max(Number(seed.width || 0), Number(last.transform?.[4] || sx) + Number(last.width || 0) - sx);
+      const direct = normalizeDigits(String(seed.str || '')).replace(/[OoＯ〇]/g, '0').replace(/[Il|]/g, '1');
+      const directDigitIndex = /写真(?:番号|No\.?|NO\.?|№)/i.test(direct) ? direct.search(/\d/) : -1;
+      const numericItem = relevant.find(item => /\d/.test(normalizeDigits(String(item.str || '')).replace(/[OoＯ〇]/g, '0')));
+      const numberOffset = directDigitIndex >= 0
+        ? Number(seed.width || width) * directDigitIndex / Math.max(1, direct.length)
+        : Math.max(0, Number(numericItem?.transform?.[4] || sx) - sx);
+      const numberWidth = directDigitIndex >= 0
+        ? Math.max(fontSize, Number(seed.width || width) * (direct.length - directDigitIndex) / Math.max(1, direct.length))
+        : Math.max(fontSize, Number(last.transform?.[4] || sx) + Number(last.width || fontSize) - sx - numberOffset);
+      const duplicate = runs.some(run => Math.abs(Number(run.anchor.transform?.[4] || 0) - sx) < 3 && Math.abs(Number(run.anchor.transform?.[5] || 0) - sy) < 3);
+      if (!duplicate) runs.push({ numbers, anchor: seed, width, numberOffset, numberWidth });
+    }
+    return runs;
+  }
   async function buildPhotoIndex() {
     state.photoIndex.clear();
+    state.photoNumberIndex.clear();
     state.damageNumberDigits = 2;
     const doc = state.photo.doc;
+    const settings = photoLinkSettings();
     for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
       $('globalStatus').textContent = `損傷写真の索引を作成中 ${pageNumber} / ${doc.numPages}`;
       const page = await doc.getPage(pageNumber);
@@ -217,13 +393,28 @@
         const item = content.items[i + anchorOffset] || content.items[i];
         const x = Number(item?.transform?.[4] || 0);
         const y = Number(item?.transform?.[5] || 0);
-        const focus = { column: x >= viewport.width / 2 ? 1 : 0, row: y < viewport.height / 2 ? 1 : 0 };
+        const focus = photoFocusForPoint(x, y, viewport.width, viewport.height, settings);
+        if (!focus) continue;
         for (const number of numbers) {
           const entries = state.photoIndex.get(number) || [];
-          if (!entries.some(entry => entry.page === pageNumber && entry.focus.column === focus.column && entry.focus.row === focus.row)) {
-            entries.push({ page: pageNumber, focus, record: photoRecordFromItems(content.items, focus, pageNumber, number, pageSpanNumber) });
+          if (!entries.some(entry => entry.page === pageNumber && entry.focus.column === focus.column && entry.focus.row === focus.row && entry.focus.columns === focus.columns && entry.focus.rows === focus.rows)) {
+            entries.push({ page: pageNumber, focus, record: photoRecordFromItems(content.items, focus, pageNumber, number, pageSpanNumber, viewport.width, viewport.height) });
             state.photoIndex.set(number, entries);
           }
+        }
+      }
+      // Build a second, independent index by the ledger's actual photo number.
+      // This lets an element drawing label such as "写真番号12" open the
+      // corresponding ledger cell even when it is not tied to a damage ID.
+      for (let row = 0; row < settings.rows; row++) for (let column = 0; column < settings.columns; column++) {
+        const focus = { column, row, columns: settings.columns, rows: settings.rows };
+        const record = photoRecordFromItems(content.items, focus, pageNumber, '', pageSpanNumber, viewport.width, viewport.height);
+        const photoNumber = normalizePhotoNumber(record.photoNumber);
+        if (!photoNumber) continue;
+        const entries = state.photoNumberIndex.get(photoNumber) || [];
+        if (!entries.some(entry => entry.page === pageNumber && entry.focus.column === column && entry.focus.row === row)) {
+          entries.push({ page: pageNumber, focus, record: { ...record, photoNumber } });
+          state.photoNumberIndex.set(photoNumber, entries);
         }
       }
       await new Promise(resolve => setTimeout(resolve, 0));
@@ -720,21 +911,61 @@
     renderAssessmentDrawingCandidates();
     $('drawingInfoDialog').classList.remove('hiddenPanel');
   }
+  function clearAssessmentData() {
+    state.assessmentDoc = null;
+    state.assessmentIndex.clear();
+    state.assessmentRows = [];
+    state.assessmentFocusNumbers = [];
+    state.assessmentFocusSpan = '';
+    $('assessmentName').textContent = '評価：未選択（任意）';
+    $('assessmentListCount').textContent = '0行';
+    $('assessmentListBody').replaceChildren();
+    $('assessmentListPane').classList.add('hiddenPanel');
+  }
+  async function pastDataPdfKind(file) {
+    const name = normalizeDigits(file.name || '').replace(/[\s　_-]+/g, '');
+    if (/写真台帳|損傷写真|写真帳/.test(name)) return 'photo';
+    if (/損傷評価|損傷程度.*評価|評価記入表/.test(name) && !/写真/.test(name)) return 'assessment';
+    if (/損傷図|部材.*要素.*番号図|要素番号図/.test(name) && !/写真|評価/.test(name)) return 'element';
+    // Some offices rename exported PDFs. Read a small text sample only when
+    // the file name itself did not identify the document type.
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const doc = await pdfjsLib.getDocument({ data: bytes, ...pdfOptions }).promise;
+      const pages = [];
+      for (let pageNumber = 1; pageNumber <= Math.min(2, doc.numPages); pageNumber++) {
+        const content = await (await doc.getPage(pageNumber)).getTextContent();
+        pages.push(content.items.map(item => cleanField(item.str)).join(' '));
+      }
+      await doc.destroy();
+      const text = pages.join(' ');
+      if (/写真番号/.test(text) && /(?:部材名|要素番号|メモ)/.test(text)) return 'photo';
+      if (/(?:損傷程度|損傷の種類)/.test(text) && /(?:健全性|診断結果|評価)/.test(text)) return 'assessment';
+      if (/(?:要素番号図|損傷図)/.test(text) || (/径間番号/.test(text) && /損傷\s*[0-9０-９]/.test(text))) return 'element';
+    } catch (error) {
+      console.warn('past data classification failed', file.name, error);
+    }
+    return '';
+  }
   async function loadPastData(files) {
     const pdfs = [...files].filter(file => /\.pdf$/i.test(file.name));
-    const element = pdfs.find(file => /部材.*要素.*番号図|要素番号図/.test(file.name));
-    const assessment = pdfs.find(file => /損傷.*(?:程度|評価)/.test(file.name) && !/写真/.test(file.name));
-    const photo = pdfs.find(file => /損傷.*写真/.test(file.name));
-    const missing = [!element && '部材要素番号図', !assessment && '損傷程度の評価', !photo && '損傷写真'].filter(Boolean);
+    const classified = [];
+    for (const file of pdfs) classified.push({ file, kind: await pastDataPdfKind(file) });
+    const element = classified.find(item => item.kind === 'element')?.file;
+    const assessment = classified.find(item => item.kind === 'assessment')?.file;
+    const photo = classified.find(item => item.kind === 'photo')?.file;
+    const missing = [!element && '損傷図', !photo && '写真台帳'].filter(Boolean);
     if (missing.length) {
-      $('globalStatus').textContent = `不足ファイル：${missing.join('・')}（3種類を同時に選択してください）`;
+      $('globalStatus').textContent = `不足ファイル：${missing.join('・')}（損傷評価は任意です）`;
       return;
     }
     try {
       await loadPdf(photo, 'photo');
-      await loadAssessmentPdf(assessment);
+      if (assessment) await loadAssessmentPdf(assessment); else clearAssessmentData();
       await loadPdf(element, 'element');
-      $('globalStatus').textContent = `過年度データ3種類を読み込みました（評価${state.assessmentIndex.size}番号）`;
+      $('globalStatus').textContent = assessment
+        ? `過年度データ3種類を読み込みました（評価${state.assessmentIndex.size}番号）`
+        : `過年度データ2種類を読み込みました（損傷図・写真台帳／損傷評価なし）`;
     } catch (error) {
       $('globalStatus').textContent = `過年度データの読み込みに失敗しました：${error}`;
     }
@@ -847,13 +1078,95 @@
     await renderSide('element');
     await restoreElementView(anchor);
   }
+  function photoCellCrop(base, focus) {
+    const area = photoRegionForFocus(focus);
+    return {
+      x: base.width * area.x,
+      y: base.height * area.y,
+      width: base.width * area.width,
+      height: base.height * area.height
+    };
+  }
   function photoRecordCrop(base, focus) {
-    // The upper record begins below the page-level bridge information table;
-    // the lower record has no preceding header. Keep their bounds separate so
-    // a header rule is not mistaken for part of the photo table.
-    const topRatio = focus.row ? .55 : .275;
-    const heightRatio = focus.row ? .315 : .295;
-    return { x: focus.column * base.width / 2, y: base.height * topRatio, width: base.width / 2, height: base.height * heightRatio };
+    const cell = photoCellCrop(base, focus);
+    const insetX = cell.width * .006, insetY = cell.height * .006;
+    return { x: cell.x + insetX, y: cell.y + insetY, width: cell.width - insetX * 2, height: cell.height - insetY * 2 };
+  }
+  function drawPhotoLinkCropBox(box, index = Number(box.dataset.index || 0)) {
+    const crop = pendingPhotoLinkRegions?.[index] || photoLinkRegions(photoLinkSettings())[index] || normalizedCrop(photoLinkSettings());
+    box.style.left = `${crop.x * 100}%`; box.style.top = `${crop.y * 100}%`;
+    box.style.width = `${crop.width * 100}%`; box.style.height = `${crop.height * 100}%`;
+    box.classList.toggle('active', index === activePhotoLinkRegion);
+  }
+  function renderPhotoLinkRegionTabs() {
+    const host = $('photoLinkRegionTabs');
+    if (!host) return;
+    host.replaceChildren();
+    const count = Number($('photoLinkColumns').value) * Number($('photoLinkRows').value);
+    for (let index = 0; index < count; index++) {
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = `枠${index + 1}`;
+      button.classList.toggle('active', index === activePhotoLinkRegion);
+      button.addEventListener('click', () => {
+        activePhotoLinkRegion = index;
+        renderPhotoLinkRegionTabs();
+        $('photoLinkCropPreview').querySelectorAll('.photoLinkCropBox').forEach(box => drawPhotoLinkCropBox(box));
+      });
+      host.appendChild(button);
+    }
+  }
+  async function renderPhotoLinkCropPreview() {
+    const host = $('photoLinkCropPreview'), status = $('photoLinkCropStatus');
+    if (!host || !status) return;
+    host.innerHTML = '';
+    if (!state.photo.doc) { status.textContent = '写真台帳を読み込むと、実際の写真枠を見ながら表示範囲を設定できます。'; return; }
+    status.textContent = '見本を準備しています…';
+    const columns = Number($('photoLinkColumns').value), rows = Number($('photoLinkRows').value);
+    const sample = state.photoNumberIndex.values().next().value?.[0];
+    const pageNumber = Math.max(1, Math.min(state.photo.doc.numPages, Number(sample?.page || 1)));
+    const page = await state.photo.doc.getPage(pageNumber);
+    const base = page.getViewport({ scale: 1 });
+    const scale = Math.min(2, Math.max(.55, 1100 / Math.max(1, base.width)));
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.ceil(base.width * scale)); canvas.height = Math.max(1, Math.ceil(base.height * scale));
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+    if (!host.isConnected) return;
+    const stage = document.createElement('div'); stage.className = 'photoLinkCropStage'; stage.style.aspectRatio = `${base.width} / ${base.height}`;
+    stage.appendChild(canvas); host.appendChild(stage);
+    if (!pendingPhotoLinkRegions || pendingPhotoLinkRegions.length !== columns * rows) {
+      pendingPhotoLinkRegions = expandedPhotoLinkRegions({ x: 0, y: 0, width: 1 / columns, height: 1 / rows }, columns, rows);
+    }
+    for (let index = 0; index < columns * rows; index++) {
+      const box = document.createElement('div'); box.className = 'photoLinkCropBox'; box.dataset.index = String(index); stage.appendChild(box);
+      const label = document.createElement('b'); label.className = 'photoLinkRegionLabel'; label.textContent = String(index + 1); box.appendChild(label);
+      ['nw','n','ne','e','se','s','sw','w'].forEach(name => { const handle = document.createElement('i'); handle.className = 'pastPhotoCropHandle'; handle.dataset.handle = name; box.appendChild(handle); });
+      box.addEventListener('pointerdown', event => {
+        event.preventDefault(); event.stopPropagation();
+        activePhotoLinkRegion = index; renderPhotoLinkRegionTabs();
+        stage.querySelectorAll('.photoLinkCropBox').forEach(candidate => drawPhotoLinkCropBox(candidate));
+        box.setPointerCapture(event.pointerId);
+        const bounds = stage.getBoundingClientRect(), start = { x: event.clientX, y: event.clientY, crop: { ...pendingPhotoLinkRegions[index] } };
+        const handle = event.target.dataset.handle || 'move';
+        const move = moveEvent => {
+          const dx = (moveEvent.clientX - start.x) / Math.max(1, bounds.width);
+          const dy = (moveEvent.clientY - start.y) / Math.max(1, bounds.height);
+          let { x, y, width, height } = start.crop;
+          if (handle === 'move') { x += dx; y += dy; }
+          else {
+            if (handle.includes('w')) { x += dx; width -= dx; } if (handle.includes('e')) width += dx;
+            if (handle.includes('n')) { y += dy; height -= dy; } if (handle.includes('s')) height += dy;
+          }
+          width = Math.max(.03, Math.min(1, width)); height = Math.max(.03, Math.min(1, height));
+          x = Math.max(0, Math.min(1 - width, x)); y = Math.max(0, Math.min(1 - height, y));
+          pendingPhotoLinkRegions[index] = { x, y, width, height }; drawPhotoLinkCropBox(box, index);
+        };
+        const end = () => { box.removeEventListener('pointermove', move); box.removeEventListener('pointerup', end); box.removeEventListener('pointercancel', end); };
+        box.addEventListener('pointermove', move); box.addEventListener('pointerup', end); box.addEventListener('pointercancel', end);
+      });
+      drawPhotoLinkCropBox(box, index);
+    }
+    renderPhotoLinkRegionTabs();
+    status.textContent = `写真台帳 ${pageNumber}ページ全体。枠1～${columns * rows}をそれぞれ写真1件分に合わせてください。`;
   }
   async function renderPastPhotoRecord(entry) {
     const page = await state.photo.doc.getPage(entry.page);
@@ -959,11 +1272,11 @@
     const fragment = document.createDocumentFragment();
     const referencePage = await target.doc.getPage(target.matches[0].page);
     const referenceBase = referencePage.getViewport({ scale: 1 });
-    const referenceCropWidth = referenceBase.width / 2;
+    const referenceCropWidth = photoRecordCrop(referenceBase, target.matches[0].focus).width;
     // The manually chosen pane width defines the photo scale. Do not reduce
     // that scale because the pane is currently short; its height is fitted to
     // the number of stacked records after rendering.
-    const commonScale = available / referenceCropWidth * target.zoom;
+    const commonScale = available / referenceCropWidth * target.zoom * photoLinkSettings().displayScale;
     const dpr = safeRenderDpr(referenceCropWidth, referenceBase.height * .315, commonScale);
     for (const match of target.matches) {
       const page = await target.doc.getPage(match.page);
@@ -988,7 +1301,7 @@
       // narrower than the window and leaves grey bands on both sides. Scale
       // the trimmed record back to the full available width while preserving
       // its aspect ratio (and the user's current zoom).
-      const fittedWidth = available * target.zoom;
+      const fittedWidth = available * target.zoom * photoLinkSettings().displayScale;
       const fittedScale = fittedWidth / Math.max(1, trimmed.width);
       wrap.style.width = `${fittedWidth}px`;
       wrap.style.height = `${trimmed.height * fittedScale}px`;
@@ -1005,12 +1318,11 @@
     target.label.textContent = `${target.matches.length}件`;
     $('photoZoomLabel').textContent = `${Math.round(target.zoom * 100)}%`;
     restoreVisibleAnnotationSelection('photo');
-    target.keepPaneHeight = false;
     fitPhotoPaneHeightToMatches();
   }
   function fitPhotoPaneHeightToMatches() {
     const pane = $('photoPane'), viewer = $('photoViewer');
-    if (pane.classList.contains('maximized') || pane.classList.contains('hiddenPanel') || state.photo.dockMode !== 'free') return;
+    if (pane.classList.contains('maximized') || pane.classList.contains('hiddenPanel') || state.photo.dockMode !== 'free' || state.photo.keepPaneHeight) return;
     const wraps = [...viewer.querySelectorAll('.photoMatch')];
     if (!wraps.length) return;
     const horizontal = false;
@@ -1019,7 +1331,8 @@
       : wraps.reduce((sum, wrap) => sum + wrap.getBoundingClientRect().height, 0) + Math.max(0, wraps.length - 1) * 6) + 6;
     const chromeHeight = pane.getBoundingClientRect().height - viewer.getBoundingClientRect().height;
     const area = $('elementViewer').getBoundingClientRect();
-    const desired = Math.max(280, Math.min(area.height - 12, Math.ceil(chromeHeight + contentHeight)));
+    const initialHeightLimit = Math.max(280, Math.min(area.height - 12, area.height * .68));
+    const desired = Math.max(280, Math.min(initialHeightLimit, Math.ceil(chromeHeight + contentHeight)));
     if (Math.abs(pane.getBoundingClientRect().height - desired) < 3) return;
     // Preserve the manually selected width. Only the vertical dimension is
     // fitted to the stacked photo records.
@@ -1272,7 +1585,20 @@
       if (Number.isFinite(item[`y${suffix}`])) copy[`y${suffix}`] = y + item[`y${suffix}`] / 1000 * height;
     }
     if (item.points) copy.points = item.points.map(mapPoint);
-    annotationList(`overview:${wrap.dataset.photoPage}`, 'photo').push(copy);
+    const overview = annotationList(`overview:${wrap.dataset.photoPage}`, 'photo');
+    // Keep one full-page counterpart for each cropped-photo annotation.
+    // This also repairs drawings created before the full-page view was opened.
+    const previous = overview.findIndex(candidate => candidate.sourceRecordKey === key && candidate.sourceAnnotationId === item.id);
+    if (previous >= 0) overview.splice(previous, 1, copy); else overview.push(copy);
+  }
+  function syncVisiblePhotoRecordAnnotations() {
+    for (const layer of state.photo.viewer.querySelectorAll('.annotationLayer[data-annotation-side="photo"]')) {
+      const key = layer.dataset.annotationKey || '';
+      if (!key.startsWith('record:')) continue;
+      const wrap = layer.closest('.pageWrap');
+      if (!wrap) continue;
+      for (const item of state.photoAnnotations.get(key) || []) mirrorPhotoRecordAnnotation(wrap, key, item);
+    }
   }
   function svgNode(name, attributes = {}) {
     const node = document.createElementNS('http://www.w3.org/2000/svg', name);
@@ -1467,6 +1793,7 @@
         style.fontSize *= 1.5;
         const item = { id: annotationId(), type: 'leader', x1: leaderTip.x, y1: leaderTip.y, x2: p.x, y2: p.y, x3: p.x + (p.x >= leaderTip.x ? 120 : -120), text: '', ...style, damageInfo: null, annotationSide: side, annotationKey: pageNumber };
         annotationList(pageNumber, side).push(item);
+        if (side === 'photo') mirrorPhotoRecordAnnotation(wrap, pageNumber, item);
         leaderTipMarker?.remove(); leaderTip = null; leaderTipMarker = null;
         renderSide(side);
         showDrawingRegistration(item); renderInspectionDrawingCandidates();
@@ -1602,8 +1929,20 @@
     const items = content.items;
     const baseViewport = page.getViewport({ scale: cssScale });
     const found = new Set();
+    const foundPhotoNumbers = new Set();
     const pageNumbers = new Set();
-    for (let i = 0; i < items.length; i++) {
+    const photoRuns = photoNumberTextRuns(items);
+    // These drawing formats use either damage-number links or photo-number
+    // links on a page. Parenthesized damage-type codes such as (7) are not
+    // damage IDs. If explicit photo labels exist, suppress damage detection.
+    const photoNumberMode = photoRuns.length > 0;
+    if (photoNumberMode) {
+      state.photoNumberPages.add(pageNumber);
+      // A stale OCR result from an earlier render may contain bracketed
+      // damage-type codes. Photo-number pages never display those orange hits.
+      state.ocrHotspots.delete(pageNumber);
+    } else state.photoNumberPages.delete(pageNumber);
+    if (!photoNumberMode) for (let i = 0; i < items.length; i++) {
       const windowItems = items.slice(i, i + 8);
       const ownNumbers = damageNumbers(items[i].str || '');
       // A complete label found later in the look-ahead window belongs to
@@ -1659,19 +1998,81 @@
         wrap.appendChild(button);
       }
     }
+    for (const match of photoRuns) {
+      const { numbers, anchor } = match;
+      const transform = pdfjsLib.Util.transform(baseViewport.transform, anchor.transform);
+      const fontHeight = Math.max(12, Math.hypot(transform[2], transform[3]));
+      const anchorText = normalizeDigits(String(anchor.str || ''));
+      const labelMatch = anchorText.match(/写真(?:番号|No\.?|NO\.?|№)/i);
+      const labelIndex = labelMatch?.index ?? -1;
+      const visualWidth = Math.max(12, Math.min(120, (match.numberWidth || match.width || anchor.width || 40) * cssScale));
+      const visualHeight = Math.max(10, fontHeight);
+      const tapWidth = Math.max(36, visualWidth + 8), tapHeight = Math.max(26, visualHeight + 8);
+      const labelOffset = Number(match.numberOffset || (labelIndex > 0 ? (anchor.width || 0) * labelIndex / Math.max(1, anchorText.length) : 0)) * cssScale;
+      addPhotoNumberHotspot(wrap, numbers, {
+        left: transform[4] + labelOffset - (tapWidth - visualWidth) / 2,
+        top: transform[5] - visualHeight - (tapHeight - visualHeight) / 2,
+        width: tapWidth, height: tapHeight, visualWidth, visualHeight
+      });
+      numbers.forEach(number => foundPhotoNumbers.add(number));
+    }
     state.textDamageNumbers.set(pageNumber, pageNumbers);
-    if (state.ocrHotspots.has(pageNumber)) {
+    if (photoNumberMode) {
+      $('globalStatus').textContent = `${foundPhotoNumbers.size}件の写真番号を認識しました`;
+    } else if (state.ocrHotspots.has(pageNumber)) {
       paintCachedOcrHotspots(pageNumber, wrap);
     } else if (found.size === 0) {
       await addOcrDamageHotspots(page, wrap, pageNumber);
     } else {
-      $('globalStatus').textContent = `${found.size}件の損傷番号を認識しました`;
+      const photoMessage = foundPhotoNumbers.size ? `、写真番号${foundPhotoNumbers.size}件` : '';
+      $('globalStatus').textContent = `${found.size}件の損傷番号${photoMessage}を認識しました`;
     }
     // Text hotspots are rendered asynchronously after the page appears.
     // Rebuild the missing-number list now so already visible orange frames do
     // not remain incorrectly listed as unrecognized.
     if (!hadParsedNumbers && !state.ocrProgress) auditRecognizedDamageNumbers();
     highlightElementHotspots();
+  }
+  function addPhotoNumberHotspot(wrap, numberOrNumbers, geometry) {
+    const numbers = [...new Set((Array.isArray(numberOrNumbers) ? numberOrNumbers : [numberOrNumbers]).map(String))];
+    if (!numbers.length) return;
+    const label = numbers.map(number => `写真番号${formatPhotoNumber(number)}`).join('・');
+    const candidateScore = values => values.length * 100 + Math.max(...values.map(value => String(value).length)) * 10 + values.reduce((sum, value) => sum + String(value).length, 0);
+    const overlapRatio = item => {
+      const left = Math.max(item.offsetLeft, geometry.left), top = Math.max(item.offsetTop, geometry.top);
+      const right = Math.min(item.offsetLeft + item.offsetWidth, geometry.left + geometry.width);
+      const bottom = Math.min(item.offsetTop + item.offsetHeight, geometry.top + geometry.height);
+      if (right <= left || bottom <= top) return 0;
+      return (right - left) * (bottom - top) / Math.max(1, Math.min(item.offsetWidth * item.offsetHeight, geometry.width * geometry.height));
+    };
+    for (const item of [...wrap.querySelectorAll('.photoNumberHotspot')]) {
+      if (overlapRatio(item) < .55) continue;
+      const existingNumbers = String(item.dataset.photoNumbers || '').split(',').filter(Boolean);
+      if (item.dataset.label === label) return;
+      // Full-page and tiled OCR can read the same glyphs differently, for
+      // example 106 and 16 when the middle zero is faint. A physical label is
+      // one link, so retain only the more complete candidate at that position.
+      if (candidateScore(existingNumbers) >= candidateScore(numbers)) return;
+      item.remove();
+    }
+    const button = document.createElement('button');
+    button.className = 'hotspot photoNumberHotspot';
+    button.dataset.kind = 'photo';
+    button.dataset.photoNumbers = numbers.join(',');
+    button.dataset.label = label;
+    button.title = `${label}の写真を表示`;
+    button.style.left = `${geometry.left}px`; button.style.top = `${geometry.top}px`;
+    button.style.width = `${geometry.width}px`; button.style.height = `${geometry.height}px`;
+    const outline = document.createElement('span'); outline.className = 'hotspot-outline';
+    outline.style.width = `${geometry.visualWidth || Math.max(28, geometry.width - 8)}px`;
+    outline.style.height = `${geometry.visualHeight || Math.max(10, geometry.height - 8)}px`;
+    button.appendChild(outline);
+    button.addEventListener('click', event => {
+      event.stopPropagation();
+      if (performance.now() < state.suppressHotspotUntil) return;
+      jumpToPhotoNumber(numbers, state.elementSpanNumbers.get(state.element.page) || '');
+    });
+    wrap.appendChild(button);
   }
   async function ensureOcrWorker() {
     if (state.ocrWorker) return state.ocrWorker;
@@ -1905,8 +2306,22 @@
     const cached = state.ocrHotspots.get(pageKey);
     if (!cached) return;
     for (const hit of cached.hits) addHotspot(wrap, hit.numbers || hit.number, hit.box, cached.width, cached.height);
+    for (const hit of cached.photoHits || []) {
+      const rawLeft = hit.box.left * wrap.clientWidth / cached.width;
+      const rawTop = hit.box.top * wrap.clientHeight / cached.height;
+      const visualWidth = Math.max(8, hit.box.width * wrap.clientWidth / cached.width);
+      const visualHeight = Math.max(8, hit.box.height * wrap.clientHeight / cached.height);
+      const displayWidth = Math.max(28, visualWidth + 8);
+      const displayHeight = Math.max(22, visualHeight + 8);
+      addPhotoNumberHotspot(wrap, hit.numbers || hit.number, {
+        left: rawLeft - (displayWidth - visualWidth) / 2,
+        top: rawTop - (displayHeight - visualHeight) / 2,
+        width: displayWidth, height: displayHeight, visualWidth, visualHeight
+      });
+    }
     const count = cached.hits.reduce((total, hit) => total + (hit.numbers?.length || 1), 0);
-    $('globalStatus').textContent = `${count}件の損傷番号を認識しました`;
+    const photoCount = (cached.photoHits || []).reduce((total, hit) => total + (hit.numbers?.length || 1), 0);
+    $('globalStatus').textContent = photoCount ? `${photoCount}件の写真番号を認識しました` : `${count}件の損傷番号を認識しました`;
   }
   function paintManualHotspots(pageNumber, wrap) {
     for (const hotspot of state.manualHotspots.get(pageNumber) || []) {
@@ -1939,7 +2354,7 @@
       }
       context.putImageData(pixels, 0, 0);
       const worker = await ensureOcrWorker();
-      let hits = [];
+      let hits = [], photoHits = [];
       const damageWordAnchors = [];
       const appendJapaneseHits = (tsv, coordinateScale = 1, offsetX = 0, offsetY = 0) => {
         const rows = String(tsv || '').split(/\r?\n/).slice(1).map(line => line.split('\t')).filter(parts => parts.length >= 12 && parts[0] === '5');
@@ -1952,10 +2367,21 @@
         }
         for (const words of lines.values()) {
           const text = words.map(word => word.text).join('');
+          const recognizedPhotoGroups = photoNumberGroups(text).map(group => [...new Set(group)]);
+          for (const recognizedPhotoNumbers of recognizedPhotoGroups) {
+            const matched = words.filter(word => {
+              const normalized = normalizeDigits(String(word.text || '')).replace(/[OoＯ〇]/g, '0').replace(/[Il|]/g, '1').replace(/[\s　]+/g, '');
+              const numeric = String(Number(normalized.replace(/\D/g, '')));
+              return recognizedPhotoNumbers.some(number => normalized.includes(formatPhotoNumber(number)) || numeric === number);
+            });
+            if (!matched.length) continue;
+            const left = Math.min(...matched.map(word => word.left)), top = Math.min(...matched.map(word => word.top));
+            const right = Math.max(...matched.map(word => word.left + word.width)), bottom = Math.max(...matched.map(word => word.top + word.height));
+            photoHits.push({ number: recognizedPhotoNumbers[0], numbers: recognizedPhotoNumbers, source: 'label', box: { left, top, width: right - left, height: bottom - top } });
+          }
           const anchorWords = words.filter(word => normalizeDigits(word.text).replace(/[\s　]+/g, '').includes('損傷'));
           for (const anchor of anchorWords) damageWordAnchors.push(anchor);
-          const numbers = [...new Set([...damageNumbers(text), ...bracketOnlyNumbers(text)].map(resolveDamageNumber))]
-            .filter(number => !state.photoIndex.size || state.photoIndex.has(number));
+          const numbers = [...new Set([...damageNumbers(text), ...bracketOnlyNumbers(text)].map(resolveDamageNumber))];
           if (!numbers.length) continue;
           const normalizedLine = normalizeDigits(text).replace(/[\s　]+/g, '').replace(/[OoＯ〇]/g, '0').replace(/[Il|]/g, '1');
           const commaGrouped = /損傷[^損傷]{0,8}\d{1,3}[、,，・／/\.．]\d{1,3}/.test(normalizedLine) ||
@@ -2464,11 +2890,49 @@
       // when OCR misses both brackets. Digits-only guesses stay manual-review
       // candidates. Per-number word anchors above still prevent neighbouring
       // callouts from sharing the wrong orange frame.
-      const displayHits = hits.filter(hit => hit.source !== 'digits');
-      state.ocrHotspots.set(pageKey, { hits: displayHits, candidates: hits, width: canvas.width, height: canvas.height });
+      let displayHits = hits.filter(hit => hit.source !== 'digits');
+      const compactPhotoHits = [];
+      for (const hit of photoHits) {
+        const key = (hit.numbers || [hit.number]).join(',');
+        const overlappingIndex = compactPhotoHits.findIndex(existing => overlapRatio(existing, hit) > .45);
+        if (overlappingIndex < 0) {
+          compactPhotoHits.push(hit);
+          continue;
+        }
+        const existing = compactPhotoHits[overlappingIndex];
+        const existingNumbers = existing.numbers || [existing.number];
+        if (existingNumbers.join(',') === key) continue;
+        const photoCandidateScore = candidate => {
+          const values = candidate.numbers || [candidate.number];
+          return values.length * 100 + Math.max(...values.map(value => String(value).length)) * 10 + values.reduce((sum, value) => sum + String(value).length, 0);
+        };
+        if (photoCandidateScore(hit) > photoCandidateScore(existing)) compactPhotoHits[overlappingIndex] = hit;
+      }
+      // A source drawing uses one numbering system. When OCR finds explicit
+      // photo-number labels, bracketed values are damage-type codes, not IDs.
+      if (compactPhotoHits.length) {
+        displayHits = [];
+        state.photoNumberPages.add(pageKey);
+      }
+      state.ocrHotspots.set(pageKey, { hits: displayHits, photoHits: compactPhotoHits, candidates: hits, width: canvas.width, height: canvas.height });
       for (const hit of displayHits) addHotspot(wrap, hit.numbers || hit.number, hit.box, canvas.width, canvas.height);
+      for (const hit of compactPhotoHits) {
+        const rawLeft = hit.box.left / canvas.width * wrap.clientWidth;
+        const rawTop = hit.box.top / canvas.height * wrap.clientHeight;
+        const visualWidth = Math.max(8, hit.box.width / canvas.width * wrap.clientWidth);
+        const visualHeight = Math.max(8, hit.box.height / canvas.height * wrap.clientHeight);
+        const tapWidth = Math.max(28, visualWidth + 8), tapHeight = Math.max(22, visualHeight + 8);
+        addPhotoNumberHotspot(wrap, hit.numbers || hit.number, {
+          left: rawLeft - (tapWidth - visualWidth) / 2,
+          top: rawTop - (tapHeight - visualHeight) / 2,
+          width: tapWidth, height: tapHeight, visualWidth, visualHeight
+        });
+      }
       const recognizedCount = displayHits.reduce((count, hit) => count + (hit.numbers?.length || 1), 0);
-      $('globalStatus').textContent = recognizedCount
+      const recognizedPhotoCount = compactPhotoHits.reduce((count, hit) => count + (hit.numbers?.length || 1), 0);
+      $('globalStatus').textContent = recognizedPhotoCount
+        ? `${recognizedPhotoCount}件の写真番号を画像認識しました。青枠をタップしてください`
+        : recognizedCount
         ? `${recognizedCount}件の損傷番号を画像認識しました。オレンジ枠をタップしてください`
         : '損傷番号を画像認識できませんでした。右上の番号入力をご利用ください';
     } catch (error) {
@@ -2488,6 +2952,14 @@
       const page = await doc.getPage(pageNumber);
       const content = await page.getTextContent();
       state.elementSpanNumbers.set(pageNumber, spanNumberFromItems(content.items));
+      if (photoNumberTextRuns(content.items).length) {
+        state.photoNumberPages.add(pageNumber);
+        state.textDamageNumbers.set(pageNumber, new Set());
+        state.ocrHotspots.delete(pageNumber);
+        await new Promise(resolve => setTimeout(resolve, 0));
+        continue;
+      }
+      state.photoNumberPages.delete(pageNumber);
       state.textDamageNumbers.set(pageNumber, new Set(damageNumbers(content.items.map(item => item.str || '').join(''))));
       if (state.ocrHotspots.has(pageNumber)) continue;
       const running = state.ocrJobs.get(pageNumber);
@@ -2499,10 +2971,15 @@
       await new Promise(resolve => setTimeout(resolve, 0));
     }
     state.ocrProgress = null;
-    auditRecognizedDamageNumbers();
-    $('globalStatus').textContent = state.missingDamageNumbers.length
-      ? `全${total}枚の画像認識完了。未認識の損傷番号が${state.missingDamageNumbers.length}件あります`
-      : `全${total}枚の画像認識が完了しました（連番の欠落なし）`;
+    if (state.photoNumberPages.size === total) {
+      state.missingDamageNumbers = [];
+      $('globalStatus').textContent = `全${total}枚を写真番号方式として認識しました`;
+    } else {
+      auditRecognizedDamageNumbers();
+      $('globalStatus').textContent = state.missingDamageNumbers.length
+        ? `全${total}枚の画像認識完了。未認識の損傷番号が${state.missingDamageNumbers.length}件あります`
+        : `全${total}枚の画像認識が完了しました（連番の欠落なし）`;
+    }
     await renderSide('element');
   }
   function promoteSequenceOcrCandidates() {
@@ -2717,7 +3194,7 @@
       row.append(label, show); list.appendChild(row);
     }
   }
-  const PHOTO_LAYOUT_STORAGE_KEY = 'inspection-photo-pane-layout-v1';
+  const PHOTO_LAYOUT_STORAGE_KEY = 'inspection-photo-pane-layout-v2';
   function savePhotoPaneLayout() {
     const pane = $('photoPane');
     if (pane.classList.contains('hiddenPanel')) return;
@@ -2751,6 +3228,7 @@
     $('photoMaximize').textContent = saved.maximized ? '元サイズ' : '最大化';
     const width = Math.max(320, Math.min(Number(saved.width) || 840, area.width - 12));
     const height = Math.max(280, Math.min(Number(saved.height) || 590, area.height - 12));
+    state.photo.keepPaneHeight = true;
     pane.style.width = `${width}px`; pane.style.height = `${height}px`; pane.style.right = 'auto';
     if (saved.dockMode === 'free') {
       pane.style.left = `${Math.max(area.left, Math.min(area.left + (Number(saved.leftOffset) || 0), area.right - width))}px`;
@@ -2768,8 +3246,8 @@
     pane.style.setProperty('--photo-max-height', `${Math.max(270, area.height - 8)}px`);
     if (pane.classList.contains('maximized')) return;
     if (state.photo.dockMode !== 'free') { applyPhotoDockLayout(); return; }
-    const width = Math.min(reset ? Math.max(320, area.width * .62) : pane.offsetWidth, area.width - 12);
-    const height = Math.min(reset ? Math.max(280, area.height * .72) : pane.offsetHeight, area.height - 12);
+    const width = Math.min(reset ? Math.max(320, Math.min(680, area.width * .46)) : pane.offsetWidth, area.width - 12);
+    const height = Math.min(reset ? Math.max(280, Math.min(660, area.height * .64)) : pane.offsetHeight, area.height - 12);
     pane.style.width = `${width}px`; pane.style.height = `${height}px`; pane.style.right = 'auto';
     if (reset) { pane.style.left = `${area.right - width - 6}px`; pane.style.top = `${area.top + 6}px`; }
     else {
@@ -2812,8 +3290,11 @@
     const wasHidden = $('photoPane').classList.contains('hiddenPanel');
     $('photoPane').classList.remove('hiddenPanel');
     requestAnimationFrame(() => {
-      if (!(wasHidden && restorePhotoPaneLayout())) placePhotoPaneInViewer(wasHidden);
-      else placePhotoPaneInViewer(false);
+      const restored = wasHidden && restorePhotoPaneLayout();
+      if (!restored) {
+        if (wasHidden) state.photo.keepPaneHeight = false;
+        placePhotoPaneInViewer(wasHidden);
+      } else placePhotoPaneInViewer(false);
     });
     if (render) setTimeout(() => renderSide('photo'), 30);
   }
@@ -2888,6 +3369,52 @@
     } finally {
       pane.classList.remove('preparing');
     }
+  }
+  async function jumpToPhotoNumber(raw, requestedSpan = null) {
+    const elementViewBeforePhoto = captureElementView();
+    const numbers = [...new Set((Array.isArray(raw) ? raw : [raw]).flatMap(value => {
+      const parsed = photoNumbers(`写真番号${value}`);
+      return parsed.length ? parsed : [normalizePhotoNumber(value)].filter(Boolean);
+    }))];
+    if (!numbers.length) return;
+    $('photoNumberInput').value = numbers.map(formatPhotoNumber).join(',');
+    if (!state.photo.doc) {
+      showPhotoPanel(false); $('matchStatus').textContent = '先に損傷写真PDFを選択してください';
+      await restoreElementView(elementViewBeforePhoto); return;
+    }
+    const currentSpan = requestedSpan === null
+      ? String(state.elementSpanNumbers.get(state.element.page) || '')
+      : normalizeDigits(String(requestedSpan)).replace(/[^0-9A-Za-z_-]/g, '');
+    $('photoSpanInput').value = currentSpan;
+    const combined = numbers.flatMap(number => (state.photoNumberIndex.get(number) || [])
+      .filter(entry => !currentSpan || !entry.record?.spanNumber || String(entry.record.spanNumber) === currentSpan)
+      .map(entry => ({ ...entry, linkedPhotoNumber: number })));
+    const entries = [...new Map(combined.map(entry => [`${entry.page}:${entry.focus.columns}:${entry.focus.rows}:${entry.focus.column}:${entry.focus.row}`, entry])).values()]
+      .sort((a, b) => a.page - b.page || a.focus.row - b.focus.row || a.focus.column - b.focus.column);
+    if (!entries.length) {
+      showPhotoPanel(false);
+      $('matchStatus').textContent = `${numbers.map(value => `写真番号${formatPhotoNumber(value)}`).join('・')}が見つかりません`;
+      await restoreElementView(elementViewBeforePhoto); return;
+    }
+    state.photo.page = entries[0].page; state.photo.focus = entries[0].focus; state.photo.matches = entries;
+    state.photo.pageOverview = false; state.photo.fitPaneAfterRender = false; state.photo.zoom = 1;
+    $('photoPageView').disabled = false; $('photoPageView').textContent = 'ページ全体';
+    const pane = $('photoPane');
+    pane.classList.toggle('photoCountOne', entries.length === 1);
+    pane.classList.toggle('photoCountTwo', entries.length === 2);
+    pane.classList.toggle('photoCountMany', entries.length > 2);
+    pane.classList.add('preparing');
+    const firstRecord = entries[0].record || {};
+    const linkedDamage = normalizePhotoNumber(firstRecord.damageNumber);
+    state.currentDamage = linkedDamage ? {
+      damageNumber: linkedDamage, spanNumber: currentSpan, elementPage: state.element.page,
+      records: entries.map(entry => ({ ...(entry.record || {}), linkedPhotoNumber: entry.linkedPhotoNumber }))
+    } : null;
+    $('matchStatus').textContent = `${entries.length}件の写真を表示`;
+    showPhotoPanel(false);
+    try {
+      await renderSide('photo'); placePhotoPaneInViewer(false); await restoreElementView(elementViewBeforePhoto);
+    } finally { pane.classList.remove('preparing'); }
   }
   function bindPager(side) {
     const move = (delta) => {
@@ -3333,13 +3860,214 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     $('globalStatus').textContent = '作図に付与した損傷情報をCSV保存しました';
   }
+  function safeSaveBaseName() {
+    const shown = cleanField($('elementName').textContent).replace(/^損傷図[：:]\s*/, '');
+    const base = shown.replace(/\.pdf$/i, '').replace(/[\\/:*?"<>|]/g, '_').trim();
+    return base && !/未選択/.test(base) ? base : '点検データ';
+  }
+  function downloadInspectionBlob(blob, suffix) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url; link.download = `${safeSaveBaseName()}_${suffix}`; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+  const serializableMap = map => [...map.entries()].map(([key, value]) => [key, value]);
+  function saveInspectionJson() {
+    const payload = {
+      format: 'cad-field-book-inspection', version: 1, appBuild: 468,
+      savedAt: new Date().toISOString(),
+      documents: {
+        element: cleanField($('elementName').textContent),
+        photo: cleanField($('photoName').textContent),
+        assessment: cleanField($('assessmentName').textContent)
+      },
+      element: {
+        currentPage: state.element.page,
+        pdfPages: state.element.doc?.numPages || 0,
+        blankPages: state.element.blankPages,
+        blankPageSize: state.element.blankPageSize
+      },
+      photo: { currentPage: state.photo.page, pdfPages: state.photo.doc?.numPages || 0 },
+      annotations: serializableMap(state.annotations),
+      photoAnnotations: serializableMap(state.photoAnnotations),
+      manualHotspots: serializableMap(state.manualHotspots),
+      hotspotOverrides: serializableMap(state.hotspotOverrides),
+      assessmentRows: state.assessmentRows,
+      inspectionRows: damageListRows(),
+      settings: {
+        damageNumberDigits: state.damageNumberDigits,
+        photoLink: photoLinkSettings()
+      }
+    };
+    const json = JSON.stringify(payload, null, 2);
+    downloadInspectionBlob(new Blob([json], { type: 'application/json;charset=utf-8' }), '点検データ.json');
+    $('inspectionSaveDialog').classList.add('hiddenPanel');
+    $('globalStatus').textContent = '点検データをJSON保存しました';
+  }
+  function imageFromBlob(blob) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob), image = new Image();
+      image.onload = () => { URL.revokeObjectURL(url); resolve(image); };
+      image.onerror = error => { URL.revokeObjectURL(url); reject(error); };
+      image.src = url;
+    });
+  }
+  function canvasJpegBytes(canvas) {
+    return new Promise((resolve, reject) => canvas.toBlob(async blob => {
+      if (!blob) { reject(new Error('画像変換に失敗しました')); return; }
+      resolve(new Uint8Array(await blob.arrayBuffer()));
+    }, 'image/jpeg', .9));
+  }
+  async function paintAnnotationExport(canvas, pageNumber) {
+    const items = state.annotations.get(pageNumber) || [];
+    if (!items.length) return;
+    const svg = svgNode('svg', { xmlns: 'http://www.w3.org/2000/svg', viewBox: '0 0 1000 1000', width: canvas.width, height: canvas.height, preserveAspectRatio: 'none' });
+    svg.dataset.arrowMarkerId = `inspectionExportArrow-${pageNumber}`;
+    const defs = svgNode('defs');
+    const style = svgNode('style');
+    style.textContent = 'line,rect,ellipse,path,polyline{fill:none;vector-effect:non-scaling-stroke} text{font-family:-apple-system,BlinkMacSystemFont,"Noto Sans JP",sans-serif;font-weight:700;paint-order:stroke;stroke:white;stroke-width:3px}';
+    const marker = svgNode('marker', { id: svg.dataset.arrowMarkerId, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, orient: 'auto-start-reverse' });
+    marker.appendChild(svgNode('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'context-stroke', stroke: 'none' }));
+    defs.append(style, marker); svg.appendChild(defs);
+    items.forEach(item => drawAnnotation(svg, JSON.parse(JSON.stringify(item))));
+    const source = new XMLSerializer().serializeToString(svg);
+    const image = await imageFromBlob(new Blob([source], { type: 'image/svg+xml;charset=utf-8' }));
+    canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+  }
+  async function renderInspectionPdfPage(pageNumber) {
+    const pdfPages = state.element.doc?.numPages || 0;
+    let width, height, canvas;
+    if (pageNumber <= pdfPages) {
+      const page = await state.element.doc.getPage(pageNumber);
+      const base = page.getViewport({ scale: 1 });
+      const scale = Math.min(2.25, 2600 / Math.max(base.width, base.height));
+      const viewport = page.getViewport({ scale });
+      width = base.width; height = base.height;
+      canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.ceil(viewport.width)); canvas.height = Math.max(1, Math.ceil(viewport.height));
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+    } else {
+      width = state.element.blankPageSize.width; height = state.element.blankPageSize.height;
+      const scale = Math.min(2.25, 2600 / Math.max(width, height));
+      canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.ceil(width * scale)); canvas.height = Math.max(1, Math.ceil(height * scale));
+      const context = canvas.getContext('2d'); context.fillStyle = '#fff'; context.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    await paintAnnotationExport(canvas, pageNumber);
+    return { width, height, pixelWidth: canvas.width, pixelHeight: canvas.height, jpeg: await canvasJpegBytes(canvas) };
+  }
+  function buildImagePdf(pages) {
+    const encoder = new TextEncoder(), objects = [], pageRefs = [];
+    const text = value => encoder.encode(value);
+    for (let index = 0; index < pages.length; index++) {
+      const pageObject = 3 + index * 3, imageObject = pageObject + 1, contentObject = pageObject + 2;
+      pageRefs.push(`${pageObject} 0 R`);
+      const page = pages[index], width = Number(page.width.toFixed(3)), height = Number(page.height.toFixed(3));
+      objects[pageObject] = text(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Resources << /XObject << /Im0 ${imageObject} 0 R >> >> /Contents ${contentObject} 0 R >>`);
+      const imageHead = text(`<< /Type /XObject /Subtype /Image /Width ${page.pixelWidth} /Height ${page.pixelHeight} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${page.jpeg.length} >>\nstream\n`);
+      const imageTail = text('\nendstream');
+      const imageBody = new Uint8Array(imageHead.length + page.jpeg.length + imageTail.length);
+      imageBody.set(imageHead); imageBody.set(page.jpeg, imageHead.length); imageBody.set(imageTail, imageHead.length + page.jpeg.length);
+      objects[imageObject] = imageBody;
+      const command = `q\n${width} 0 0 ${height} 0 0 cm\n/Im0 Do\nQ\n`;
+      objects[contentObject] = text(`<< /Length ${text(command).length} >>\nstream\n${command}endstream`);
+    }
+    objects[1] = text('<< /Type /Catalog /Pages 2 0 R >>');
+    objects[2] = text(`<< /Type /Pages /Kids [${pageRefs.join(' ')}] /Count ${pages.length} >>`);
+    const chunks = [text('%PDF-1.4\n%âãÏÓ\n')], offsets = new Array(objects.length).fill(0);
+    let length = chunks[0].length;
+    for (let number = 1; number < objects.length; number++) {
+      offsets[number] = length;
+      const head = text(`${number} 0 obj\n`), tail = text('\nendobj\n');
+      chunks.push(head, objects[number], tail); length += head.length + objects[number].length + tail.length;
+    }
+    const xrefOffset = length;
+    let xref = `xref\n0 ${objects.length}\n0000000000 65535 f \n`;
+    for (let number = 1; number < objects.length; number++) xref += `${String(offsets[number]).padStart(10, '0')} 00000 n \n`;
+    chunks.push(text(`${xref}trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`));
+    const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0), output = new Uint8Array(total);
+    let cursor = 0; for (const chunk of chunks) { output.set(chunk, cursor); cursor += chunk.length; }
+    return new Blob([output], { type: 'application/pdf' });
+  }
+  async function saveInspectionPdf() {
+    const pageCount = (state.element.doc?.numPages || 0) + state.element.blankPages;
+    if (!pageCount) { $('globalStatus').textContent = '損傷図PDFを読み込んでください'; return; }
+    const button = $('inspectionSavePdf'); button.disabled = true;
+    try {
+      const pages = [];
+      for (let page = 1; page <= pageCount; page++) {
+        $('globalStatus').textContent = `PDF保存用データを作成中… ${page} / ${pageCount}`;
+        pages.push(await renderInspectionPdfPage(page));
+      }
+      downloadInspectionBlob(buildImagePdf(pages), '点検図面.pdf');
+      $('inspectionSaveDialog').classList.add('hiddenPanel');
+      $('globalStatus').textContent = `点検図面をPDF保存しました（${pageCount}ページ）`;
+    } catch (error) {
+      console.error('inspection PDF save failed', error);
+      $('globalStatus').textContent = `PDF保存に失敗しました：${String(error?.message || error)}`;
+    } finally { button.disabled = false; }
+  }
   $('pastDataFiles').addEventListener('change', e => e.target.files.length && loadPastData(e.target.files));
   const jumpFromPhotoInputs = () => jumpToDamage($('damageInput').value, $('photoSpanInput').value);
+  const jumpFromPhotoNumberInput = () => jumpToPhotoNumber($('photoNumberInput').value, $('photoSpanInput').value);
   $('damageJump').addEventListener('click', jumpFromPhotoInputs);
+  $('photoNumberJump').addEventListener('click', jumpFromPhotoNumberInput);
   $('damageInput').addEventListener('keydown', e => { if (e.key === 'Enter') jumpFromPhotoInputs(); });
-  $('photoSpanInput').addEventListener('keydown', e => { if (e.key === 'Enter') jumpFromPhotoInputs(); });
+  $('photoNumberInput').addEventListener('keydown', e => { if (e.key === 'Enter') jumpFromPhotoNumberInput(); });
+  $('photoSpanInput').addEventListener('keydown', e => { if (e.key === 'Enter') ($('photoNumberInput').value ? jumpFromPhotoNumberInput() : jumpFromPhotoInputs()); });
+  $('photoLinkSettings').addEventListener('click', () => {
+    const settings = photoLinkSettings();
+    $('photoLinkColumns').value = String(settings.columns); $('photoLinkRows').value = String(settings.rows);
+    $('photoLinkDisplayScale').value = String(settings.displayScale);
+    pendingPhotoLinkRegions = photoLinkRegions(settings).map(region => ({ ...region }));
+    activePhotoLinkRegion = 0;
+    $('photoLinkSettingsDialog').classList.remove('hiddenPanel');
+    renderPhotoLinkCropPreview().catch(error => { $('photoLinkCropStatus').textContent = `見本を表示できません：${String(error)}`; });
+  });
+  $('photoLinkSettingsCancel').addEventListener('click', () => { pendingPhotoLinkRegions = null; $('photoLinkSettingsDialog').classList.add('hiddenPanel'); });
+  ['photoLinkColumns', 'photoLinkRows'].forEach(id => $(id).addEventListener('change', () => {
+    const columns = Number($('photoLinkColumns').value), rows = Number($('photoLinkRows').value);
+    pendingPhotoLinkRegions = expandedPhotoLinkRegions({ x: 0, y: 0, width: 1 / columns, height: 1 / rows }, columns, rows);
+    activePhotoLinkRegion = 0;
+    renderPhotoLinkCropPreview().catch(error => { $('photoLinkCropStatus').textContent = `見本を表示できません：${String(error)}`; });
+  }));
+  $('photoLinkCropReset').addEventListener('click', () => {
+    const columns = Number($('photoLinkColumns').value), rows = Number($('photoLinkRows').value);
+    pendingPhotoLinkRegions = expandedPhotoLinkRegions({ x: 0, y: 0, width: 1 / columns, height: 1 / rows }, columns, rows);
+    activePhotoLinkRegion = 0; renderPhotoLinkRegionTabs();
+    $('photoLinkCropPreview').querySelectorAll('.photoLinkCropBox').forEach(box => drawPhotoLinkCropBox(box));
+  });
+  $('photoLinkSettingsSave').addEventListener('click', async () => {
+    const columns = Number($('photoLinkColumns').value), rows = Number($('photoLinkRows').value);
+    const regions = pendingPhotoLinkRegions || photoLinkRegions(photoLinkSettings());
+    const crop = regions[0] || normalizedCrop(photoLinkSettings());
+    const settings = {
+      columns, rows,
+      displayScale: Number($('photoLinkDisplayScale').value),
+      cropX: crop.x, cropY: crop.y, cropWidth: crop.width, cropHeight: crop.height,
+      regions: regions.map(normalizedCrop)
+    };
+    localStorage.setItem(PHOTO_LINK_SETTINGS_KEY, JSON.stringify(settings));
+    pendingPhotoLinkRegions = null;
+    $('photoLinkSettingsDialog').classList.add('hiddenPanel');
+    state.photo.matches = null; state.photo.focus = null; state.photo.pageOverview = false;
+    if (state.photo.doc) {
+      await buildPhotoIndex();
+      $('globalStatus').textContent = `${settings.columns}枚×${settings.rows}段で再索引しました（写真番号${state.photoNumberIndex.size}件）`;
+      if (state.element.doc) await renderSide('element');
+    } else {
+      $('globalStatus').textContent = `${settings.columns}枚×${settings.rows}段の写真リンク設定を保存しました`;
+    }
+  });
   $('drawingCsv').addEventListener('click', exportDrawingCsv);
   $('damageListCsv').addEventListener('click', exportDrawingCsv);
+  $('inspectionSave').addEventListener('click', () => $('inspectionSaveDialog').classList.remove('hiddenPanel'));
+  $('inspectionSaveCancel').addEventListener('click', () => $('inspectionSaveDialog').classList.add('hiddenPanel'));
+  $('inspectionSaveJson').addEventListener('click', saveInspectionJson);
+  $('inspectionSavePdf').addEventListener('click', saveInspectionPdf);
+  $('inspectionSaveDialog').addEventListener('click', event => {
+    if (event.target === $('inspectionSaveDialog')) $('inspectionSaveDialog').classList.add('hiddenPanel');
+  });
   $('topDamageList').addEventListener('click', showDamageList);
   $('damageListClose').addEventListener('click', hideDamageList);
   $('recognitionResults').addEventListener('click', () => { renderRecognitionResults(); $('recognitionResultPane').classList.remove('hiddenPanel'); });
@@ -3527,6 +4255,9 @@
   $('photoClose').addEventListener('click', hidePhotoPanel);
   $('photoPageView').addEventListener('click', async event => {
     if (!state.photo.matches?.length) return;
+    // Synchronize every cropped-photo drawing before replacing the record
+    // canvases with the full-page view.
+    if (!state.photo.pageOverview) syncVisiblePhotoRecordAnnotations();
     state.photo.pageOverview = !state.photo.pageOverview;
     state.photo.zoom = 1;
     state.photo.page = state.photo.matches[0].page;
