@@ -14,7 +14,7 @@
     This is a placeholder for base href that will be replaced by the value of
     the `--base-href` argument provided to `flutter build`.
   -->
-  <base href="./">
+  <base href="/">
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
@@ -25,22 +25,37 @@
   >
   <style>
     html, body {
+      position: fixed;
+      inset: 0;
       width: 100%;
       height: 100%;
       margin: 0;
+      padding: 0;
       overflow: hidden;
       overscroll-behavior: none;
       touch-action: none;
+      background: #f8fafb;
+      -webkit-text-size-adjust: 100%;
     }
     flt-glass-pane, flutter-view {
+      width: 100%;
+      height: 100%;
       touch-action: none;
+      background: #f8fafb;
+    }
+    @supports (height: 100dvh) {
+      html, body, flt-glass-pane, flutter-view {
+        height: 100dvh;
+      }
     }
   </style>
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="drawing_app">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="CAD野帳">
+  <meta name="theme-color" content="#0b4657">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
@@ -52,6 +67,7 @@
 <body>
   <script src="vendor/exceljs.min.js"></script>
   <script src="vendor/jszip.min.js"></script>
+  <script src="binary_dxf.js?v=469"></script>
   <script>
     window.cadFieldbookBuildPhotoLedgerExcel = async function(templateBytes, entriesJson, title) {
       if (!window.ExcelJS) throw new Error('Excel作成機能を読み込めませんでした');
@@ -175,7 +191,8 @@
         const mimeMatch = entry.photoData.match(/^data:image\/(png|jpeg|jpg|webp);base64,/i);
         const rawExtension = mimeMatch ? mimeMatch[1].toLowerCase() : 'jpg';
         const extension = rawExtension === 'jpeg' ? 'jpg' : rawExtension;
-        const fileName = `${number}.${extension}`;
+        const camera = entry.cameraId === 'camera2' ? 'C2' : 'C1';
+        const fileName = `${camera}_${number}.${extension}`;
         if (storedNames.has(fileName)) return;
         storedNames.add(fileName);
         folder.file(
@@ -401,7 +418,7 @@
         );
       }
       const bootstrap = document.createElement('script');
-      bootstrap.src = 'flutter_bootstrap.js?v=20260906-project-name200';
+      bootstrap.src = 'flutter_bootstrap.js?v=20261015-photo-ledger-dedup477';
       document.body.appendChild(bootstrap);
     })();
   </script>

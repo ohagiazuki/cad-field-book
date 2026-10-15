@@ -4,12 +4,13 @@ const CACHE_PREFIX = 'cad-fieldbook-offline-';
 // Increment this value whenever the web application is published.
 // Static files are served cache-first, so reusing an old value would keep an
 // older main.dart.js even after a new build has been deployed.
-const CACHE_NAME = `${CACHE_PREFIX}20260906-project-name200`;
+const CACHE_NAME = `${CACHE_PREFIX}20261015-photo-ledger-dedup477`;
 const CORE_FILES = [
   './',
   'index.html',
   'flutter.js',
   'flutter_bootstrap.js',
+  'binary_dxf.js',
   'main.dart.js',
   'manifest.json',
   'favicon.png',
@@ -17,6 +18,11 @@ const CORE_FILES = [
   'icons/Icon-512.png',
   'icons/Icon-maskable-192.png',
   'icons/Icon-maskable-512.png',
+  'tesseract/tesseract.min.js',
+  'tesseract/worker.min.js',
+  'tesseract/tesseract-core-lstm.wasm.js',
+  'tesseract/tesseract-core-lstm.wasm',
+  'tesseract/lang/jpn.traineddata.gz',
 ];
 
 async function addInBatches(cache, urls) {
@@ -57,10 +63,12 @@ self.addEventListener('fetch', (event) => {
       try {
         const response = await fetch(event.request);
         const cache = await caches.open(CACHE_NAME);
-        cache.put('index.html', response.clone());
+        cache.put(event.request, response.clone());
         return response;
       } catch (_) {
-        return (await caches.match('index.html')) || (await caches.match('./'));
+        return (await caches.match(event.request)) ||
+          (await caches.match('index.html')) ||
+          (await caches.match('./'));
       }
     })());
     return;

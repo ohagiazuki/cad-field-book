@@ -225,5 +225,13 @@
     "pdfjs/standard_fonts/LiberationSans-Italic.ttf",
     "pdfjs/standard_fonts/LiberationSans-Regular.ttf",
     "pdfjs/standard_fonts/LICENSE_FOXIT",
-    "pdfjs/standard_fonts/LICENSE_LIBERATION"
+    "pdfjs/standard_fonts/LICENSE_LIBERATION",
+    "inspection/index.html",
+    "inspection/inspection.css",
+    "inspection/inspection.js",
+    "tesseract/tesseract.min.js",
+    "tesseract/worker.min.js",
+    "tesseract/tesseract-core-lstm.wasm.js",
+    "tesseract/tesseract-core-lstm.wasm",
+    "tesseract/lang/jpn.traineddata.gz"
 ]
