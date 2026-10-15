@@ -191,7 +191,8 @@
         const mimeMatch = entry.photoData.match(/^data:image\/(png|jpeg|jpg|webp);base64,/i);
         const rawExtension = mimeMatch ? mimeMatch[1].toLowerCase() : 'jpg';
         const extension = rawExtension === 'jpeg' ? 'jpg' : rawExtension;
-        const fileName = `${number}.${extension}`;
+        const camera = entry.cameraId === 'camera2' ? 'C2' : 'C1';
+        const fileName = `${camera}_${number}.${extension}`;
         if (storedNames.has(fileName)) return;
         storedNames.add(fileName);
         folder.file(
@@ -417,7 +418,7 @@
         );
       }
       const bootstrap = document.createElement('script');
-      bootstrap.src = 'flutter_bootstrap.js?v=20260909-github-bootstrap-fix236';
+      bootstrap.src = 'flutter_bootstrap.js?v=20261015-photo-ledger-camera476';
       document.body.appendChild(bootstrap);
     })();
   </script>
